@@ -90,35 +90,38 @@ class _FilterMenuButton extends StatelessWidget {
           );
           if (buttonContext.mounted && selected != null) onChanged(selected);
         },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: Grid.xxs),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                _filterLabels[filter]!,
-                style: context.textTheme.labelLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(width: Grid.quarter),
-              Icon(
-                LucideIcons.chevronDown,
-                size: 16,
-                color: context.colors.onSurfaceVariant,
-              ),
-              if (dueReminderCount > 0 || draftCount > 0) ...[
-                const SizedBox(width: Grid.quarter),
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: context.colors.primary,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: Grid.xl),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Grid.xxs),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _filterLabels[filter]!,
+                  style: context.textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
+                const SizedBox(width: Grid.quarter),
+                Icon(
+                  LucideIcons.chevronDown,
+                  size: 16,
+                  color: context.colors.onSurfaceVariant,
+                ),
+                if (dueReminderCount > 0 || draftCount > 0) ...[
+                  const SizedBox(width: Grid.quarter),
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: context.colors.primary,
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
