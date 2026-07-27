@@ -22,7 +22,6 @@ import { uploadMediaBytes, type BlobDescriptor } from "@/shared/api/tauri";
 import { copyTextToSystemClipboard } from "@/shared/api/tauriMedia";
 import type { SnapshotMemoryLevel } from "@/shared/api/tauriPersonas";
 import type { AgentPersona, UserSearchResult } from "@/shared/api/types";
-import { cn } from "@/shared/lib/cn";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -198,39 +197,32 @@ function MemoryShareConfirmation({
 
 function ShareLevelControl({
   ariaLabel,
-  className,
   disabled,
   hasMemoryOptions,
-  onOpenChange,
-  staticClassName,
-  staticLabel,
   testId,
   value,
   options,
   onChange,
 }: {
   ariaLabel: string;
-  className?: string;
   disabled: boolean;
   hasMemoryOptions: boolean;
-  onOpenChange?: (open: boolean) => void;
-  staticClassName?: string;
-  staticLabel: string;
   testId: string;
   value: SnapshotMemoryLevel;
   options: { value: SnapshotMemoryLevel; label: string }[];
   onChange: (level: SnapshotMemoryLevel) => void;
 }) {
   if (!hasMemoryOptions) {
+    // Nothing to choose from, so there is no dropdown to open. State the
+    // outcome rather than naming the sole option: the memory-level labels
+    // ("Agent only", "+ core memory", …) are comparative and only make sense
+    // when the alternatives are actually offered.
     return (
       <span
-        className={cn(
-          "inline-flex h-8 w-auto shrink-0 items-center justify-end px-2 text-sm text-muted-foreground",
-          staticClassName,
-        )}
+        className="inline-flex h-8 w-auto shrink-0 items-center justify-end px-2 text-sm text-muted-foreground"
         data-testid={testId}
       >
-        {staticLabel}
+        No memories included
       </span>
     );
   }
@@ -238,9 +230,7 @@ function ShareLevelControl({
   return (
     <SnapshotOptionMenu
       ariaLabel={ariaLabel}
-      className={className}
       disabled={disabled}
-      onOpenChange={onOpenChange}
       onValueChange={(nextValue) => onChange(nextValue as SnapshotMemoryLevel)}
       options={options}
       testId={testId}
@@ -272,9 +262,7 @@ export function SnapshotShareDialog({
   const [copyStatus, setCopyStatus] = React.useState<CopyStatus>("idle");
   const [pendingMemoryShare, setPendingMemoryShare] =
     React.useState<PendingMemoryShare | null>(null);
-  const [linkShareLevel, setLinkShareLevel] =
-    React.useState<SnapshotMemoryLevel>("none");
-  const [recipientShareLevel, setRecipientShareLevel] =
+  const [shareLevel, setShareLevel] =
     React.useState<SnapshotMemoryLevel>("none");
   const encodedSnapshotCacheRef = React.useRef(
     new Map<SnapshotMemoryLevel, Promise<EncodedSnapshot>>(),
@@ -293,9 +281,7 @@ export function SnapshotShareDialog({
   const isActionPending = isPending || isCopying || isSending;
   const isInterfacePending = isPending || isSending;
   const hasSelectedRecipients = selectedRecipients.length > 0;
-  const showMemoryWarning =
-    linkShareLevel !== "none" ||
-    (hasSelectedRecipients && recipientShareLevel !== "none");
+  const showMemoryWarning = shareLevel !== "none";
   const recipientActionTransition = shouldReduceMotion
     ? { duration: 0 }
     : RECIPIENT_ACTION_TRANSITION;
@@ -347,8 +333,7 @@ export function SnapshotShareDialog({
       setSelectedRecipients([]);
       setCopyStatus("idle");
       setPendingMemoryShare(null);
-      setLinkShareLevel("none");
-      setRecipientShareLevel("none");
+      setShareLevel("none");
       onReset?.();
       snapshotSendController.reset();
     }
@@ -491,6 +476,23 @@ export function SnapshotShareDialog({
 
           <div className="space-y-4 pt-4">
             <div className="space-y-2">
+              <div
+                className="flex items-center gap-3"
+                data-testid={`${testIdPrefix}-share-level-row`}
+              >
+                <h3 className="min-w-0 flex-1 text-sm font-medium">
+                  What’s included
+                </h3>
+                <ShareLevelControl
+                  ariaLabel="What to include"
+                  disabled={isInterfacePending}
+                  hasMemoryOptions={hasMemoryOptions}
+                  onChange={setShareLevel}
+                  options={shareLevels}
+                  testId={`${testIdPrefix}-share-level`}
+                  value={shareLevel}
+                />
+              </div>
               <div className="flex items-start gap-2">
                 <motion.div
                   className="min-w-0 flex-1"
@@ -505,21 +507,6 @@ export function SnapshotShareDialog({
                     excludedPubkeys={excludedRecipientPubkeys}
                     onSelectionChange={setSelectedRecipients}
                     open={open}
-                    renderEndControl={(handleAccessOpenChange) => (
-                      <ShareLevelControl
-                        ariaLabel="What to include"
-                        className="-mr-2 h-7"
-                        disabled={isInterfacePending}
-                        hasMemoryOptions={hasMemoryOptions}
-                        onChange={setRecipientShareLevel}
-                        onOpenChange={handleAccessOpenChange}
-                        options={shareLevels}
-                        staticLabel={`${itemLabelTitle} only`}
-                        staticClassName="-mr-2 h-7 w-auto"
-                        testId={`${testIdPrefix}-recipient-access`}
-                        value={recipientShareLevel}
-                      />
-                    )}
                     selectedUsers={selectedRecipients}
                     testIdPrefix={testIdPrefix}
                   />
@@ -542,9 +529,7 @@ export function SnapshotShareDialog({
                           isActionPending ||
                           !snapshotSendController.isDmSafetyReady
                         }
-                        onClick={() =>
-                          requestMemoryShare("send", recipientShareLevel)
-                        }
+                        onClick={() => requestMemoryShare("send", shareLevel)}
                         type="button"
                       >
                         {isSending ? "Sending…" : "Send"}
@@ -610,16 +595,6 @@ export function SnapshotShareDialog({
                     Anyone with the link can add and use a copy.
                   </p>
                 </div>
-                <ShareLevelControl
-                  ariaLabel="What to include in the link"
-                  disabled={isInterfacePending}
-                  hasMemoryOptions={hasMemoryOptions}
-                  onChange={setLinkShareLevel}
-                  options={shareLevels}
-                  staticLabel={`${itemLabelTitle} only`}
-                  testId={`${testIdPrefix}-link-access`}
-                  value={linkShareLevel}
-                />
               </div>
               {afterLink ? <div className="mt-2">{afterLink}</div> : null}
               <Separator
@@ -633,7 +608,7 @@ export function SnapshotShareDialog({
                   data-copy-status={copyStatus}
                   data-testid={`${testIdPrefix}-copy-link`}
                   disabled={isActionPending}
-                  onClick={() => requestMemoryShare("copy", linkShareLevel)}
+                  onClick={() => requestMemoryShare("copy", shareLevel)}
                   size="sm"
                   type="button"
                   variant="outline"
