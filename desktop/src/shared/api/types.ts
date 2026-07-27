@@ -774,6 +774,12 @@ export type AgentPersona = {
   shared: boolean;
   /** Team ID if this persona was imported from a team directory. Team personas are non-editable. */
   sourceTeam?: string | null;
+  /**
+   * Set only on a local copy of another owner's shared catalog entry. A copy
+   * carries a fresh local `id`, so this coordinate is the only thing that can
+   * answer "is this catalog entry already added" without minting a duplicate.
+   */
+  catalogSource?: CatalogSourceCoordinate | null;
   /** Agent environment variables, layered after desktop parent and persona values. */
   envVars: Record<string, string>;
   /** NIP-AP behavioral defaults (wire shape). Null/empty = unset. */
@@ -782,6 +788,16 @@ export type AgentPersona = {
   parallelism: number | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/**
+ * A catalog publication's coordinate: the owner who published it and the
+ * `d`-tag identifying the persona within that owner's catalog. Mirrors the
+ * backend `CatalogSource`.
+ */
+export type CatalogSourceCoordinate = {
+  ownerPubkey: string;
+  personaId: string;
 };
 
 /**
@@ -804,6 +820,11 @@ export type CreatePersonaInput = {
   namePool?: string[];
   envVars?: Record<string, string>;
   behavior?: PersonaBehaviorInput;
+  /**
+   * Set when this persona is a copy of another owner's shared catalog entry,
+   * so the catalog can tell an already-added foreign entry from a new one.
+   */
+  catalogSource?: CatalogSourceCoordinate;
 };
 
 export type UpdatePersonaInput = {

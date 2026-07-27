@@ -1618,14 +1618,45 @@ test("a community member can discover and add another member's catalog agent", a
     .poll(() => countCommandInvocations(page, "create_persona"))
     .toBe(1);
   const imported = await invokeTauri<
-    Array<{ display_name: string; system_prompt: string; shared: boolean }>
+    Array<{
+      display_name: string;
+      system_prompt: string;
+      shared: boolean;
+      catalog_source: { owner_pubkey: string; persona_id: string } | null;
+    }>
   >(page, "list_personas");
   expect(
     imported.find((persona) => persona.display_name === "Alice’s Reviewer"),
   ).toMatchObject({
     system_prompt: "Review changes for the whole community.",
     shared: false,
+    // Provenance is what lets the catalog recognise the copy on the next open.
+    catalog_source: {
+      owner_pubkey: TEST_IDENTITIES.alice.pubkey,
+      persona_id: personaId,
+    },
   });
+
+  // Reopening must offer the entry as already added rather than minting a
+  // second copy — the copy has a fresh local id, so only the stored
+  // coordinate can link it back to Alice's publication.
+  await page.keyboard.press("Escape");
+  await openPersonaCatalog(page);
+  // The entry now projects onto the local copy, so its list-item testid is the
+  // local persona id rather than the catalog coordinate.
+  await expect(
+    page.getByTestId(`persona-catalog-list-item-${remoteCatalogId}`),
+  ).toHaveCount(0);
+  await page
+    .locator('[data-testid^="persona-catalog-list-item-"]')
+    .filter({ hasText: "Alice’s Reviewer" })
+    .click();
+  const addedTarget = page.getByRole("button", {
+    name: "Alice’s Reviewer is already in My Agents",
+  });
+  await expect(addedTarget).toBeDisabled();
+  await expect(addedTarget).toHaveText("Added to My Agents");
+  expect(await countCommandInvocations(page, "create_persona")).toBe(1);
 });
 
 test("share access controls include the selected memories", async ({

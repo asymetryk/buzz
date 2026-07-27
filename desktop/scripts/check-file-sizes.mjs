@@ -245,7 +245,11 @@ const overrides = new Map([
   // (#2680) to indicate runtimes that need a separate CLI install.
   // +6: ManagedAgent.runtime record-level pin + JSDoc so the harness delete
   // confirmation can count referencing agents (review fix for #2773).
-  ["src/shared/api/types.ts", 1058],
+  // +21: CatalogSourceCoordinate + the `catalogSource` fields on AgentPersona
+  // and CreatePersonaInput. The coordinate is the only identifier a catalog
+  // copy keeps, so it is what stops the catalog re-offering "Add" for an
+  // already-added foreign entry. Queued to split.
+  ["src/shared/api/types.ts", 1079],
   // harness-persona-sync feature growth, queued to split in the resolver-unify
   // refactor followup. discovery.rs is dominated by the new test module
   // (the effective_agent_command / divergent / create-time override matrix);

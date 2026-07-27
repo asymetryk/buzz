@@ -19,6 +19,12 @@ export type RawPersona = {
   is_active?: boolean;
   shared?: boolean;
   source_team?: string | null;
+  /**
+   * Provenance of a local copy of another owner's catalog entry. Serialized by
+   * the backend `CatalogSource` in snake_case; the create payload sends the
+   * camelCase aliases it accepts.
+   */
+  catalog_source?: { owner_pubkey: string; persona_id: string } | null;
   env_vars?: Record<string, string>;
   respond_to?: string | null;
   respond_to_allowlist?: string[];
@@ -43,6 +49,12 @@ export function fromRawPersona(persona: RawPersona): AgentPersona {
     isActive: persona.is_active ?? true,
     shared: persona.shared ?? false,
     sourceTeam: persona.source_team ?? null,
+    catalogSource: persona.catalog_source
+      ? {
+          ownerPubkey: persona.catalog_source.owner_pubkey,
+          personaId: persona.catalog_source.persona_id,
+        }
+      : null,
     envVars: persona.env_vars ?? {},
     respondTo: (persona.respond_to as RespondToMode | undefined) ?? null,
     respondToAllowlist: persona.respond_to_allowlist ?? [],
@@ -71,6 +83,7 @@ export async function createPersona(
         namePool: input.namePool ?? [],
         envVars: input.envVars ?? {},
         behavior: input.behavior,
+        catalogSource: input.catalogSource,
       },
     }),
   );

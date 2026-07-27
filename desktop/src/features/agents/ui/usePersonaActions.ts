@@ -24,6 +24,7 @@ import {
 import {
   type CatalogPersonaShareLevel,
   catalogPersonasFromPublications,
+  findLocalPersonaForCatalogEntry,
   isCatalogPersona,
 } from "@/features/agents/lib/personaCatalogRelay";
 import {
@@ -302,17 +303,15 @@ export function usePersonaActions() {
     clearFeedback(surface);
     try {
       if (active && isCatalogPersona(persona)) {
-        const ownLocalPersona = persona.catalogSource.isOwn
-          ? personas.find(
-              (candidate) =>
-                candidate.id === persona.catalogSource.sourcePersonaId,
-            )
-          : undefined;
+        const localPersona = findLocalPersonaForCatalogEntry(
+          personas,
+          persona.catalogSource,
+        );
 
-        if (ownLocalPersona) {
-          if (!ownLocalPersona.isActive) {
+        if (localPersona) {
+          if (!localPersona.isActive) {
             await setPersonaActiveMutation.mutateAsync({
-              id: ownLocalPersona.id,
+              id: localPersona.id,
               active: true,
             });
           }
@@ -330,6 +329,14 @@ export function usePersonaActions() {
                 persona.respondTo === "anyone" ? "anyone" : "owner-only",
               parallelism: persona.parallelism ?? undefined,
             },
+            // Provenance on the copy: without it the copy's fresh local id is
+            // the only identifier, and the catalog offers "Add" again.
+            catalogSource: persona.catalogSource.isOwn
+              ? undefined
+              : {
+                  ownerPubkey: persona.catalogSource.ownerPubkey,
+                  personaId: persona.catalogSource.personaId,
+                },
           });
         }
       } else {

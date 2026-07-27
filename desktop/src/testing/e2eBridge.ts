@@ -811,6 +811,7 @@ type RawPersona = {
   is_active: boolean;
   shared: boolean;
   source_team?: string | null;
+  catalog_source?: { owner_pubkey: string; persona_id: string } | null;
   env_vars?: Record<string, string>;
   respond_to?: string | null;
   respond_to_allowlist?: string[];
@@ -7364,6 +7365,7 @@ async function handleCreatePersona(args: {
     provider?: string;
     envVars?: Record<string, string>;
     behavior?: PersonaBehaviorInput;
+    catalogSource?: { ownerPubkey: string; personaId: string };
   };
 }): Promise<RawPersona> {
   const now = new Date().toISOString();
@@ -7379,6 +7381,16 @@ async function handleCreatePersona(args: {
     is_active: true,
     shared: false,
     source_team: null,
+    // Mirrors `CatalogSource::normalized`: the coordinate a catalog copy keeps
+    // so the catalog can tell an already-added foreign entry from a new one.
+    catalog_source: args.input.catalogSource
+      ? {
+          owner_pubkey: args.input.catalogSource.ownerPubkey
+            .trim()
+            .toLowerCase(),
+          persona_id: args.input.catalogSource.personaId.trim(),
+        }
+      : null,
     env_vars: { ...(args.input.envVars ?? {}) },
     created_at: now,
     updated_at: now,

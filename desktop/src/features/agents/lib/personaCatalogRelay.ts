@@ -1,6 +1,7 @@
 import { relayClient } from "@/shared/api/relayClient";
 import type {
   AgentPersona,
+  CatalogSourceCoordinate,
   RelayEvent,
   RespondToMode,
 } from "@/shared/api/types";
@@ -31,11 +32,11 @@ export type PersonaCatalogPublication = {
 };
 
 export type CatalogPersona = AgentPersona & {
-  catalogSource: {
+  catalogSource: CatalogSourceCoordinate & {
+    /** The publication event this projection was built from. */
     eventId: string;
-    ownerPubkey: string;
+    /** Whether the current identity published it. */
     isOwn: boolean;
-    sourcePersonaId: string;
   };
 };
 
@@ -191,11 +192,11 @@ export async function fetchPersonaCatalogPublications(): Promise<
 
 function publicationToPersona(
   publication: PersonaCatalogPublication,
-  ownLocalPersona: AgentPersona | undefined,
+  localPersona: AgentPersona | undefined,
   isOwn: boolean,
 ): CatalogPersona {
   const timestamp = new Date(publication.createdAt * 1_000).toISOString();
-  const basePersona: AgentPersona = ownLocalPersona ?? {
+  const basePersona: AgentPersona = localPersona ?? {
     id: `catalog:${publication.ownerPubkey}:${publication.sourcePersonaId}`,
     displayName: publication.agent.displayName,
     avatarUrl: publication.agent.avatarUrl,
@@ -225,7 +226,7 @@ function publicationToPersona(
       eventId: publication.eventId,
       ownerPubkey: publication.ownerPubkey,
       isOwn,
-      sourcePersonaId: publication.sourcePersonaId,
+      personaId: publication.sourcePersonaId,
     },
   };
 }
@@ -240,16 +241,44 @@ export function catalogPersonasFromPublications(
 
   for (const publication of publications) {
     const isOwn = publication.ownerPubkey === normalizedCurrentPubkey;
-    const ownLocalPersona = isOwn
-      ? localPersonas.find(
-          (persona) => persona.id === publication.sourcePersonaId,
-        )
-      : undefined;
-    personas.push(publicationToPersona(publication, ownLocalPersona, isOwn));
+    personas.push(
+      publicationToPersona(
+        publication,
+        findLocalPersonaForCatalogEntry(localPersonas, {
+          ownerPubkey: publication.ownerPubkey,
+          personaId: publication.sourcePersonaId,
+          isOwn,
+        }),
+        isOwn,
+      ),
+    );
   }
 
   return personas.sort((left, right) =>
     left.displayName.localeCompare(right.displayName),
+  );
+}
+
+/**
+ * The local persona backing a catalog entry, if the user already has it.
+ *
+ * An own publication is found by id — its `d`-tag *is* the local persona id. A
+ * copy of another owner's entry carries a fresh local id instead, so the only
+ * link back is the `catalogSource` coordinate stored on the copy. Matching on
+ * that coordinate is what stops the catalog from offering "Add" for an entry
+ * the user already added, which would mint a second copy.
+ */
+export function findLocalPersonaForCatalogEntry(
+  localPersonas: readonly AgentPersona[],
+  source: CatalogSourceCoordinate & { isOwn: boolean },
+): AgentPersona | undefined {
+  if (source.isOwn) {
+    return localPersonas.find((persona) => persona.id === source.personaId);
+  }
+  return localPersonas.find(
+    (persona) =>
+      persona.catalogSource?.ownerPubkey === source.ownerPubkey &&
+      persona.catalogSource?.personaId === source.personaId,
   );
 }
 
