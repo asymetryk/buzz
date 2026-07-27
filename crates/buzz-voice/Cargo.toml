@@ -1,0 +1,12 @@
+[package]
+name = "buzz-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reusable local voice primitives for Buzz"
+
+[dependencies]
+serde_json = { workspace = true }
+sherpa-onnx = "1.12"

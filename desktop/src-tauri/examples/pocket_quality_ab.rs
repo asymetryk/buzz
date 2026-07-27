@@ -19,7 +19,7 @@
 // standalone corpus generator deliberately does not call.
 #![allow(dead_code)]
 
-#[path = "../src/huddle/pocket.rs"]
+#[path = "../../../crates/buzz-voice/src/pocket.rs"]
 mod production_pocket;
 #[path = "../src/huddle/preprocessing.rs"]
 mod production_preprocessing;
