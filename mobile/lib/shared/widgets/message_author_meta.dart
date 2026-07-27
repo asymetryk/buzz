@@ -93,7 +93,15 @@ class MessageAuthorMeta extends StatelessWidget {
         const SizedBox(width: Grid.half),
         Text('·', style: resolvedMetadataStyle),
         const SizedBox(width: Grid.half),
-        Text(timestamp, key: timestampKey, style: resolvedMetadataStyle),
+        Flexible(
+          child: Text(
+            timestamp,
+            key: timestampKey,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: resolvedMetadataStyle,
+          ),
+        ),
       ],
     );
   }
