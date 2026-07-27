@@ -739,7 +739,7 @@ export function PersonaShareDialog({
   const catalogShareLevels = React.useMemo(
     () => [
       { value: "not-shared", label: "Not shared" },
-      { value: "none", label: "Agent only" },
+      { value: "none", label: "Shared" },
     ],
     [],
   );

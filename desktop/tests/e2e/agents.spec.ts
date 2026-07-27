@@ -92,7 +92,7 @@ async function sharePersonaToCatalog(
   await page.getByRole("menuitem", { name: "Share" }).click();
   await page.getByTestId("persona-share-catalog-access").click();
   await page
-    .getByRole("menuitemradio", { name: "Agent only", exact: true })
+    .getByRole("menuitemradio", { name: "Shared", exact: true })
     .click();
   await page
     .getByTestId("persona-share-dialog")
@@ -1431,12 +1431,12 @@ This deliberately long fenced-code example must not establish the minimum width 
   await catalogAccess.click();
   await expect(page.getByRole("menuitemradio")).toHaveText([
     "Not shared",
-    "Agent only",
+    "Shared",
   ]);
   await page
-    .getByRole("menuitemradio", { name: "Agent only", exact: true })
+    .getByRole("menuitemradio", { name: "Shared", exact: true })
     .click();
-  await expect(catalogAccess).toHaveText("Agent only");
+  await expect(catalogAccess).toHaveText("Shared");
   const storedPersonas = await invokeTauri<
     Array<{ id: string; shared: boolean }>
   >(page, "list_personas");
@@ -1524,7 +1524,7 @@ This deliberately long fenced-code example must not establish the minimum width 
 
   await page.getByLabel("Open actions for Catalog Analyst").click();
   await page.getByRole("menuitem", { name: "Share" }).click();
-  await expect(catalogAccess).toHaveText("Agent only");
+  await expect(catalogAccess).toHaveText("Shared");
   await catalogAccess.click();
   await page
     .getByRole("menuitemradio", { name: "Not shared", exact: true })
@@ -1561,7 +1561,7 @@ test("a queued catalog share is not presented as relay-published", async ({
   await page.getByRole("menuitem", { name: "Share" }).click();
   await page.getByTestId("persona-share-catalog-access").click();
   await page
-    .getByRole("menuitemradio", { name: "Agent only", exact: true })
+    .getByRole("menuitemradio", { name: "Shared", exact: true })
     .click();
 
   await expect(
@@ -1751,7 +1751,7 @@ test("share access controls include the selected memories", async ({
   await catalogAccess.click();
   await expect(page.getByRole("menuitemradio")).toHaveText([
     "Not shared",
-    "Agent only",
+    "Shared",
   ]);
   await page.keyboard.press("Escape");
   const copyLinkButton = shareDialog.getByTestId("persona-share-copy-link");
