@@ -7,8 +7,6 @@ import type {
 } from "@/shared/api/types";
 import { KIND_PERSONA } from "@/shared/constants/kinds";
 
-const MAX_CATALOG_EVENTS = 1_000;
-
 export type CatalogPersonaShareLevel = "not-shared" | "none";
 
 type CatalogAgentProjection = {
@@ -180,14 +178,64 @@ export function catalogPublicationsFromEvents(
   return publications;
 }
 
+/**
+ * Events per catalog page.
+ *
+ * Kept well under the relay's 1,000-row `query_events` clamp so a page that
+ * comes back full is a reliable "there may be more" signal rather than a
+ * silently truncated result.
+ */
+const CATALOG_PAGE_SIZE = 500;
+
+/**
+ * Hard bound on pages walked, so a relay that keeps returning full pages can
+ * never spin this forever.
+ */
+const MAX_CATALOG_PAGES = 40;
+
+/**
+ * Read every shared persona event, page by page.
+ *
+ * A single `limit`-capped fetch silently truncates once a community publishes
+ * more agents than the relay's clamp, and the entries that fall off are simply
+ * undiscoverable. Paging walks backwards through `created_at` using the only
+ * cursor a WS `REQ` filter carries — `until` — which the relay treats as
+ * *inclusive*, so consecutive pages overlap on tied timestamps. Two things
+ * follow, and both are load-bearing:
+ *
+ * - dedupe by event id, because the boundary events repeat; and
+ * - stop when a page contributes nothing new, because a page whose events all
+ *   share one `created_at` would otherwise be requested forever.
+ */
 export async function fetchPersonaCatalogPublications(): Promise<
   PersonaCatalogPublication[]
 > {
-  const events = await relayClient.fetchEvents({
-    kinds: [KIND_PERSONA],
-    limit: MAX_CATALOG_EVENTS,
-  });
-  return catalogPublicationsFromEvents(events);
+  const byId = new Map<string, RelayEvent>();
+  let until: number | undefined;
+
+  for (let page = 0; page < MAX_CATALOG_PAGES; page += 1) {
+    const events = await relayClient.fetchEvents({
+      kinds: [KIND_PERSONA],
+      limit: CATALOG_PAGE_SIZE,
+      ...(until === undefined ? {} : { until }),
+    });
+
+    const sizeBefore = byId.size;
+    let oldestCreatedAt = Number.POSITIVE_INFINITY;
+    for (const event of events) {
+      byId.set(event.id, event);
+      oldestCreatedAt = Math.min(oldestCreatedAt, event.created_at);
+    }
+
+    // A short page is the end of the catalog; a page of only-repeats means the
+    // cursor cannot advance past a run of tied timestamps.
+    if (events.length < CATALOG_PAGE_SIZE || byId.size === sizeBefore) {
+      break;
+    }
+    until = oldestCreatedAt;
+  }
+
+  return catalogPublicationsFromEvents([...byId.values()]);
 }
 
 function publicationToPersona(

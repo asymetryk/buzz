@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 
+import { relayClient } from "@/shared/api/relayClient";
 import {
   catalogPersonasFromPublications,
   catalogPublicationsFromEvents,
+  fetchPersonaCatalogPublications,
   personaEventIsShared,
 } from "./personaCatalogRelay.ts";
 
@@ -313,4 +315,94 @@ test("test_own_publication_still_resolves_by_local_id", () => {
 
   assert.equal(personas[0].id, "reviewer");
   assert.equal(personas[0].catalogSource.isOwn, true);
+});
+
+function pageOfEvents(count, startId, createdAt) {
+  return Array.from({ length: count }, (_, index) =>
+    personaEvent({
+      createdAt: typeof createdAt === "function" ? createdAt(index) : createdAt,
+      id: `event-${startId + index}`,
+      sourcePersonaId: `persona-${startId + index}`,
+    }),
+  );
+}
+
+function stubPagedRelay(pages) {
+  const filters = [];
+  mock.method(relayClient, "fetchEvents", (filter) => {
+    filters.push(filter);
+    return Promise.resolve(pages[filters.length - 1] ?? []);
+  });
+  return filters;
+}
+
+// A single limit-capped fetch drops every entry past the relay's clamp, making
+// those agents undiscoverable. The walk must keep going while pages come back
+// full, and must carry an `until` cursor derived from the oldest event seen.
+test("test_full_page_is_followed_by_a_cursored_request_for_older_events", async (t) => {
+  t.after(() => mock.restoreAll());
+  const filters = stubPagedRelay([
+    pageOfEvents(500, 0, (index) => 10_000 - index),
+    pageOfEvents(3, 500, 9_000),
+  ]);
+
+  const publications = await fetchPersonaCatalogPublications();
+
+  assert.equal(filters.length, 2, "a full page must be followed by another");
+  assert.equal(filters[0].until, undefined, "the first page has no cursor");
+  assert.equal(
+    filters[1].until,
+    10_000 - 499,
+    "the cursor must be the oldest created_at from the previous page",
+  );
+  assert.equal(
+    publications.length,
+    503,
+    "entries past the first page must still be discoverable",
+  );
+});
+
+test("test_short_first_page_does_not_issue_a_second_request", async (t) => {
+  t.after(() => mock.restoreAll());
+  const filters = stubPagedRelay([pageOfEvents(2, 0, 10_000)]);
+
+  const publications = await fetchPersonaCatalogPublications();
+
+  assert.equal(filters.length, 1);
+  assert.equal(publications.length, 2);
+});
+
+// `until` is inclusive on the relay, so consecutive pages overlap on the
+// boundary timestamp. Without id dedupe the repeats would be counted twice.
+test("test_overlapping_pages_are_deduped_by_event_id", async (t) => {
+  t.after(() => mock.restoreAll());
+  const firstPage = pageOfEvents(500, 0, (index) => 10_000 - index);
+  const secondPage = [
+    // The boundary event repeats because `until` includes its timestamp.
+    firstPage[firstPage.length - 1],
+    ...pageOfEvents(2, 500, 9_000),
+  ];
+  stubPagedRelay([firstPage, secondPage]);
+
+  const publications = await fetchPersonaCatalogPublications();
+
+  assert.equal(publications.length, 502, "the repeated event must count once");
+});
+
+// The stop-on-no-progress guard: a full page whose events all share one
+// created_at cannot advance the cursor, so paging must terminate instead of
+// re-requesting the same page forever.
+test("test_full_page_of_tied_timestamps_terminates_the_walk", async (t) => {
+  t.after(() => mock.restoreAll());
+  const tiedPage = pageOfEvents(500, 0, 10_000);
+  const filters = stubPagedRelay([tiedPage, tiedPage, tiedPage, tiedPage]);
+
+  const publications = await fetchPersonaCatalogPublications();
+
+  assert.equal(
+    filters.length,
+    2,
+    "the walk must stop once a page contributes nothing new",
+  );
+  assert.equal(publications.length, 500);
 });
