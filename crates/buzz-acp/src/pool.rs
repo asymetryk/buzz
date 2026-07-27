@@ -675,9 +675,9 @@ impl AgentPool {
     }
 
     /// Three-way split-borrow variant of [`Self::rx_and_join_set`] that also
-    /// exposes `task_map`. Used by the shutdown drain (R6-F4), which needs
-    /// to look up a panicking task's `TaskMeta` inside the same `select!`
-    /// that's already polling `result_rx`/`join_set`.
+    /// exposes `task_map`. Used by the shutdown drain, which needs to look
+    /// up a panicking task's `TaskMeta` inside the same `select!` that's
+    /// already polling `result_rx`/`join_set`.
     pub fn rx_join_set_and_task_map(
         &mut self,
     ) -> (

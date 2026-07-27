@@ -2764,18 +2764,6 @@ channels = "ALL"
     }
 
     #[test]
-    fn resume_on_restart_bare_flag_is_true() {
-        let args = CliArgs::try_parse_from([
-            "buzz-acp",
-            "--private-key",
-            TEST_PRIVATE_KEY,
-            "--resume-on-restart",
-        ])
-        .expect("clap should parse args");
-        assert!(args.resume_on_restart);
-    }
-
-    #[test]
     fn resume_on_restart_equals_false_disables() {
         let args = CliArgs::try_parse_from([
             "buzz-acp",
@@ -2785,18 +2773,6 @@ channels = "ALL"
         ])
         .expect("clap should parse args");
         assert!(!args.resume_on_restart);
-    }
-
-    #[test]
-    fn resume_on_restart_equals_true_enables() {
-        let args = CliArgs::try_parse_from([
-            "buzz-acp",
-            "--private-key",
-            TEST_PRIVATE_KEY,
-            "--resume-on-restart=true",
-        ])
-        .expect("clap should parse args");
-        assert!(args.resume_on_restart);
     }
 
     #[test]

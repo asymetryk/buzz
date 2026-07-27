@@ -2,7 +2,6 @@
 //! still owes a turn for, so a restarted harness can resume without
 //! re-prompting.
 //!
-//! See `PLANS/AGENT_AUTO_RESUME_LEDGER.md` (rev 6.1) for the full design.
 //! This module owns the file format, atomic persistence, the per-channel
 //! sync contract (with unresolved-record preservation across ordinary
 //! rewrites), the unresolved-trigger lifecycle (resolve/invalidate), and
@@ -94,9 +93,7 @@ pub struct Ledger {
     dirty: bool,
     /// Unresolved boot-fetch records, keyed by channel. Preserved across
     /// ordinary `sync()` rewrites of the same channel until resolved
-    /// (event arrives live) or invalidated (channel removed) — see
-    /// `PLANS/AGENT_AUTO_RESUME_LEDGER.md` §"Unresolved-trigger lifecycle"
-    /// (P3-F3).
+    /// (event arrives live) or invalidated (channel removed).
     unresolved: HashMap<Uuid, Vec<LedgerRecord>>,
 }
 
@@ -294,8 +291,8 @@ impl Ledger {
     /// any unresolved records for that channel (the two are disjoint by
     /// construction — see the module-level design doc). Skips the write
     /// entirely if the merged record set is unchanged since the last
-    /// write to this channel AND no prior write failed (skip-identical-write,
-    /// P2-F3; dirty-flag retry, P3-F3).
+    /// write to this channel AND no prior write failed (skip-identical-write
+    /// plus dirty-flag retry).
     pub fn sync(&mut self, channel_id: Uuid, triggers: Vec<RecoverableTrigger>) {
         if self.path.is_none() {
             return;
@@ -324,8 +321,8 @@ impl Ledger {
     /// Boot-only: commit the single transactional snapshot computed as
     /// `live ∪ unresolved` per channel, then resume normal per-mutation
     /// `sync()` behavior. This is the **only** ledger write during boot
-    /// recovery (P2-F4) — a crash before this call leaves the pre-crash
-    /// file untouched.
+    /// recovery — a crash before this call leaves the pre-crash file
+    /// untouched.
     pub fn commit(&mut self, live: HashMap<Uuid, Vec<RecoverableTrigger>>) {
         let mut channels: HashMap<Uuid, Vec<LedgerRecord>> = HashMap::new();
         let all_channels = live.keys().copied().chain(self.unresolved.keys().copied());
@@ -336,7 +333,6 @@ impl Ledger {
                 channels.insert(channel_id, records);
             }
         }
-        // Unconditionally update last_written to reflect desired state.
         self.last_written = channels;
         self.dirty = !self.persist_candidate(&self.last_written.clone());
     }
@@ -358,8 +354,7 @@ impl Ledger {
     /// directory, then rename over the real path. Returns `true` on success.
     /// A crash mid-write leaves the previous file intact; a crash after the
     /// rename leaves the new one intact — there is no partially-written state.
-    /// The caller is responsible for advancing `last_written` only on success
-    /// (P3-F3).
+    /// The caller is responsible for advancing `last_written` only on success.
     fn persist_candidate(&self, candidate: &HashMap<Uuid, Vec<LedgerRecord>>) -> bool {
         let Some(path) = &self.path else { return true }; // no-path = in-memory only
         let file = LedgerFile {

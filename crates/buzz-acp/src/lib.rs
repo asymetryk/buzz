@@ -1532,8 +1532,7 @@ async fn tokio_main() -> Result<()> {
     // Durable pending-turn ledger (auto-resume after restart). Disabled
     // outright (`Ledger::disabled()`, no disk I/O) when the flag is off;
     // otherwise loaded now so boot recovery can stage it before the main
-    // loop starts. See `boot_recover` below and
-    // `PLANS/AGENT_AUTO_RESUME_LEDGER.md`.
+    // loop starts.
     let agent_pubkey_hex = config.keys.public_key().to_hex();
     let (mut ledger, staged_ledger) = if config.resume_on_restart {
         let state_dir = config.state_dir.clone().unwrap_or_else(|| {
@@ -1551,12 +1550,7 @@ async fn tokio_main() -> Result<()> {
         (Ledger::disabled(), ledger::StagedLedger::default())
     };
 
-    // Boot recovery: membership-gate → chunked REST fetch (reconciled
-    // per-event) → import in admission_seq order (with cap promotion) →
-    // suppression set → unresolved barrier registration → single commit.
     // No-ops end to end when the ledger is disabled or the stage is empty.
-    // See `boot_recover` and `PLANS/AGENT_AUTO_RESUME_LEDGER.md` §"Boot
-    // recovery".
     let mut recovered_suppression: HashSet<String> = HashSet::new();
     if ledger.is_enabled() {
         boot_recover(
@@ -2054,7 +2048,7 @@ async fn tokio_main() -> Result<()> {
                                     };
                                     // Purge durable live + unresolved records together —
                                     // re-adding the channel later must not resurrect
-                                    // discarded work (P3-F3 invalidation exit).
+                                    // discarded work.
                                     ledger.invalidate_channel(ch);
                                     // Track removed channels so checked-out agents get
                                     // their sessions stripped when they return to the pool.
@@ -2263,8 +2257,8 @@ async fn tokio_main() -> Result<()> {
                             let event_for_steer = buzz_event.event.clone();
                             let prompt_tag_for_steer = prompt_tag.clone();
 
-                            // R6-F2: recovered-suppression seam. If this
-                            // event was boot-recovered (its id is in the
+                            // Recovered-suppression seam. If this event
+                            // was boot-recovered (its id is in the
                             // suppression set), it is already in the queue
                             // via import_recovered — the relay replay is a
                             // duplicate. But if the event was unresolved
@@ -2469,7 +2463,7 @@ async fn tokio_main() -> Result<()> {
                 ) == LoopAction::Exit
                 {
                     // Sync before exit: complete_batch dirtied the queue but
-                    // the exit bypasses dispatch_pending's sync call (P3-F2).
+                    // the exit bypasses dispatch_pending's sync call.
                     sync_dirty(&mut queue, &mut ledger);
                     break;
                 }
@@ -2487,7 +2481,7 @@ async fn tokio_main() -> Result<()> {
                 ) == LoopAction::Exit
                 {
                     // Sync before exit: classify dirtied the queue but the
-                    // exit bypasses dispatch_pending's sync call (P3-F2).
+                    // exit bypasses dispatch_pending's sync call.
                     sync_dirty(&mut queue, &mut ledger);
                     break;
                 }
@@ -2515,7 +2509,7 @@ async fn tokio_main() -> Result<()> {
                 if pool.live_count() == 0 && !any_respawn_in_flight(&crash_history) {
                     tracing::error!("all agents dead — exiting");
                     // Sync before exit: complete_batch dirtied the queue but
-                    // the exit bypasses dispatch_pending's sync call (P3-F2).
+                    // the exit bypasses dispatch_pending's sync call.
                     sync_dirty(&mut queue, &mut ledger);
                     break;
                 }
@@ -2731,7 +2725,7 @@ async fn tokio_main() -> Result<()> {
     )
     .await;
     // Drain any remaining results that arrived after join_set drained but
-    // before tasks were aborted. Same R5-F2 classification as above.
+    // before tasks were aborted. Same classification as above.
     while let Ok(mut pr) = pool.result_rx_try_recv() {
         let idx = pr.agent.index;
         classify_and_complete_batch(
@@ -2829,7 +2823,7 @@ fn is_owner_control_command(
 // ── admit_live_event ─────────────────────────────────────────────────────────
 
 /// Admit a live relay event into the queue, resolving it against boot
-/// recovery's suppression set and unresolved barrier first (R6-F2).
+/// recovery's suppression set and unresolved barrier first.
 ///
 /// Returns `(accepted, skip_steer)`: `accepted` is whether the event landed
 /// in the queue (mirrors `EventQueue::push`'s admission result on the normal
@@ -2859,7 +2853,7 @@ fn admit_live_event(
         // the ledger's original seq/timestamp/cap_exempt/prompt_tag.
         // The persisted `prompt_tag` is used rather than the live match's
         // tag — a config or rule-priority change between admission and
-        // restart must not alter recovery framing (P3-F4).
+        // restart must not alter recovery framing.
         let recovered = QueuedEvent::from_recovered(
             channel_id,
             event,
@@ -2881,7 +2875,7 @@ fn admit_live_event(
         ));
         // While the channel has an active unresolved barrier the steer
         // side-door is suppressed: the fresh live event queues normally and
-        // waits behind the barrier hole rather than bypassing it (P3-F1).
+        // waits behind the barrier hole rather than bypassing it.
         let skip_steer = queue.has_active_unresolved_barrier(channel_id);
         (ok, skip_steer)
     }
@@ -3055,7 +3049,7 @@ fn try_native_steer(
 
 /// Maximum event ids fetched per REST `/query` chunk during boot recovery.
 /// One `Filter` with `ids(chunk)` per request — the relay is queried by
-/// id-set, not per-id (see `PLANS/AGENT_AUTO_RESUME_LEDGER.md` R5-F5).
+/// id-set, not per-id.
 const BOOT_RECOVERY_CHUNK_SIZE: usize = 100;
 
 /// Overall wall-clock budget for the boot-recovery REST fetch phase,
@@ -3070,9 +3064,7 @@ const BOOT_RECOVERY_BARRIER_DEADLINE: Duration = Duration::from_secs(60);
 /// by `Ledger::load`) → chunked id-set fetch under one global deadline,
 /// each chunk reconciled per-event → `import_recovered` in global
 /// `admission_seq` order (cap promotion) → suppression set → unresolved
-/// barrier registration → single commit merging unresolved. See
-/// `PLANS/AGENT_AUTO_RESUME_LEDGER.md` §"Boot recovery" for the full
-/// design and its numbered edge cases.
+/// barrier registration → single commit merging unresolved.
 ///
 /// A no-op (immediate return) when the staged ledger has nothing to
 /// recover. Never blocks boot past `BOOT_RECOVERY_FETCH_DEADLINE`: any trigger
@@ -3151,8 +3143,8 @@ async fn boot_recover(
         };
         let requested: HashSet<&str> = chunk.iter().map(String::as_str).collect();
         for raw in events {
-            // Responses are reconciled, never trusted (R6-F5): deserialize,
-            // verify signature/id, require id in the requested chunk and
+            // Responses are reconciled, never trusted: deserialize, verify
+            // signature/id, require id in the requested chunk and
             // its `h` tag to match the ledger record's channel.
             let event = match serde_json::from_value::<nostr::Event>(raw.clone()) {
                 Ok(ev) => ev,
@@ -3240,8 +3232,8 @@ async fn boot_recover(
         queue.import_recovered(channel_id, events);
     }
 
-    // Register the unresolved ordering barrier per channel (R6-F1) before
-    // the single commit, so the queue's flush gate is armed from boot.
+    // Register the unresolved ordering barrier per channel before the
+    // single commit, so the queue's flush gate is armed from boot.
     // The barrier deadline starts NOW (after fetch reconciliation), not
     // from the start of the fetch phase — a slow bridge must not consume
     // the resolution window.
@@ -3254,7 +3246,7 @@ async fn boot_recover(
         );
     }
 
-    // Single transactional commit (P2-F4): live ∪ unresolved, computed
+    // Single transactional commit: live ∪ unresolved, computed
     // after every import above. Resumes normal per-mutation sync from here.
     let mut live: HashMap<Uuid, Vec<queue::RecoverableTrigger>> = HashMap::new();
     for channel_id in queue.take_dirty_channels() {
@@ -3267,8 +3259,7 @@ async fn boot_recover(
 
 /// Drain every channel a public `&mut queue` mutator touched since the
 /// last call and persist each one's current recoverable set. This is the
-/// one sync rule the auto-resume ledger design relies on (see
-/// `PLANS/AGENT_AUTO_RESUME_LEDGER.md` §"Core principle") — call it after
+/// one sync rule the auto-resume ledger design relies on — call it after
 /// *every* public queue mutation so the durable mirror never drifts from
 /// the in-memory queue.
 fn sync_dirty(queue: &mut EventQueue, ledger: &mut Ledger) {
@@ -3431,8 +3422,8 @@ fn spawn_failure_notice(
 /// and apply it via [`EventQueue::complete_batch`], posting a dead-letter
 /// failure notice when retries are exhausted. Shared by the normal
 /// completion path (`handle_prompt_result`) and the shutdown-drain paths
-/// (R5-F2/R6-F4): both apply the identical disposition logic, but the
-/// shutdown paths skip everything else here (respawn, heartbeat
+/// paths: both apply the identical disposition logic, but the shutdown
+/// paths skip everything else here (respawn, heartbeat
 /// bookkeeping, dispatch) — the caller decides what happens after.
 fn classify_and_complete_batch(
     queue: &mut EventQueue,
@@ -3577,8 +3568,8 @@ fn classify_and_complete_batch(
 /// not guaranteed).
 ///
 /// Extracted from `run()`'s shutdown sequence so tests can drive the real
-/// `select!` arms — including a task that panics mid-grace (R6-F4) and a
-/// result that arrives mid-grace (R5-F2) — instead of calling
+/// `select!` arms — including a task that panics mid-grace and a result
+/// that arrives mid-grace — instead of calling
 /// `queue.complete_batch()` directly and asserting the same disposition the
 /// production code was supposed to apply.
 async fn drain_shutdown_grace(
@@ -3598,8 +3589,8 @@ async fn drain_shutdown_grace(
                     match result {
                         Some(Err(join_error)) => {
                             tracing::warn!("task error during shutdown: {join_error}");
-                            // R6-F4: a task that panics during the shutdown
-                            // grace period produces no PromptResult, so its
+                            // A task that panics during the shutdown grace
+                            // period produces no PromptResult, so its
                             // in-flight triggers would otherwise stay stale
                             // in the ledger mirror — Queue mode skipping
                             // retry accounting, Drop mode resurrecting a
@@ -3679,8 +3670,8 @@ fn handle_prompt_result(
     // branch below records what actually happened; only the hard-timeout
     // match arm in the death_message construction reads it.
     //
-    // `classify_and_complete_batch` owns all disposition logic (P3-F1 —
-    // one atomic completion writer) and returns the fate suffix for this
+    // `classify_and_complete_batch` owns all disposition logic (one atomic
+    // completion writer) and returns the fate suffix for this
     // death_message.
     let hard_timeout_fate_suffix =
         classify_and_complete_batch(queue, config, &mut result, removed_channels, rest_client);
@@ -5782,7 +5773,7 @@ mod error_outcome_emission_tests {
     }
 
     #[tokio::test]
-    async fn paul_probe_channel_released_after_ok_completion() {
+    async fn channel_released_after_ok_completion_allows_next_dispatch() {
         // Real main-loop cycle: push -> flush_next (marks in-flight) ->
         // Ok completion via handle_prompt_result -> channel must be
         // released so the next event can dispatch.
@@ -8180,7 +8171,7 @@ mod boot_recovery_integration_tests {
         assert_eq!(triggers[0].event_id, event_a.id.to_hex());
     }
 
-    // ── Scenario 10: panic during grace in both dedup modes (R6-F4) ──────
+    // ── Scenario 10: panic during grace in both dedup modes ─────────────
 
     /// Drive a real join_set task panic through `drain_shutdown_grace`,
     /// asserting the post-panic recoverable_triggers state for `dedup_mode`.
@@ -8494,7 +8485,7 @@ mod boot_recovery_integration_tests {
         // Tamper the forged event's signature after signing — the id is
         // still requested (matches the ledger record), but verification
         // must fail, so the record must stay unresolved-retained rather
-        // than importing untrusted content (R6-F5).
+        // than importing untrusted content.
         let mut forged_json = serde_json::to_value(&ev_forged).unwrap();
         let tampered_sig = "0".repeat(128);
         forged_json["sig"] = serde_json::Value::String(tampered_sig);
@@ -8581,7 +8572,7 @@ mod boot_recovery_integration_tests {
         server.abort();
     }
 
-    // ── Scenario 13: steer short-circuit (R6-F2) ─────────────────────────
+    // ── Scenario 13: steer short-circuit ─────────────────────────────────
 
     #[tokio::test]
     async fn test_unresolved_resolution_skips_steer_path() {
@@ -9069,16 +9060,14 @@ mod boot_recovery_integration_tests {
         server.abort();
     }
 
-    // P2-F2(b) residual: an exempt record that the bridge OMITS (stays
-    // unresolved) must not cause the fetched, non-exempt counterpart to be
-    // promoted anyway. `boot_recover` decides promote_channels from the full
-    // gated snapshot (both records: one exempt) — so the channel is NOT in
+    // An exempt record that the bridge OMITS (stays unresolved) must not
+    // cause the fetched, non-exempt counterpart to be promoted anyway.
+    // `boot_recover` decides promote_channels from the full gated snapshot
+    // (both records: one exempt) — so the channel is NOT in
     // promote_channels, and the fetched counted record must reach
-    // `import_recovered` still bearing `cap_exempt = false`. Before the
-    // P2-F2(b) fix, `import_recovered` independently recomputed promotion
-    // from only the events vector it received (just the fetched one),
-    // saw zero exempt records in THAT subset, and promoted it anyway —
-    // this is the exact defect Paul's residual review caught.
+    // `import_recovered` still bearing `cap_exempt = false`. Promotion must
+    // never be re-derived from only the fetched subset, which would see zero
+    // exempt records and promote it anyway.
     #[tokio::test]
     async fn test_boot_recover_exempt_unfetched_does_not_promote_fetched_counted() {
         let keys = Keys::generate();
@@ -9196,14 +9185,13 @@ mod boot_recovery_integration_tests {
         server.abort();
     }
 
-    // ── P3-F1: barrier-aware skip_steer ─────────────────────────────────
+    // ── Barrier-aware skip_steer ────────────────────────────────────────
 
     #[tokio::test]
     async fn test_live_event_skips_steer_while_barrier_armed() {
-        // P3-F1 fix: a fresh live event for a channel that has an active
-        // unresolved barrier must return skip_steer = true (queue normally
-        // and wait behind the hole) rather than bypassing it through native
-        // steer.
+        // A fresh live event for a channel that has an active unresolved
+        // barrier must return skip_steer = true (queue normally and wait
+        // behind the hole) rather than bypassing it through native steer.
         //
         // Red-on-old: before the fix, `admit_live_event`'s ordinary branch
         // always returned `(ok, false)` — skip_steer was never set for
@@ -9286,109 +9274,14 @@ mod boot_recovery_integration_tests {
         );
     }
 
-    // ── P3-F2: sync-before-exit ─────────────────────────────────────────
-
-    #[tokio::test]
-    async fn test_exit_via_handle_prompt_result_syncs_ledger_before_break() {
-        // P3-F2 model: this test is a NON-DISCRIMINATING model of the break-
-        // site contract, not a red-on-old mutation of production code.
-        //
-        // It models the fixed main-loop path — dispatch in-flight, force Exit
-        // from handle_prompt_result, explicitly call sync_dirty (mirroring what
-        // each of the three fixed break sites now does), then reload — to
-        // confirm the zero-triggers post-condition holds when sync_dirty IS
-        // called. Because sync_dirty is called in the test body itself, removing
-        // any of the three production sync_dirty calls does not make this test
-        // fail; source review of the three break sites (lib.rs ~2290, ~2308,
-        // ~2336) is the discriminating verification for P3-F2.
-        //
-        // Contract: after a circuit-open exit path that calls sync_dirty, the
-        // reloaded ledger must contain zero recovered triggers (the terminated
-        // in-flight work must not resurrect).
-        let keys = Keys::generate();
-        let ch = Uuid::new_v4();
-        let event_a = make_channel_event(&keys, ch, "msg");
-
-        let mut queue = EventQueue::new(DedupMode::Queue);
-        let dir = tempfile::tempdir().unwrap();
-        let (mut ledger, _) = Ledger::load(dir.path(), "test_pubkey", "ws://localhost:3000", 0);
-
-        // Dispatch a real in-flight batch.
-        let mut pool = dispatch_one_in_flight(&mut queue, &mut ledger, ch, &event_a).await;
-        assert!(
-            !queue.recoverable_triggers(ch).is_empty(),
-            "setup: in-flight trigger must be present"
-        );
-
-        // Force the circuit open.
-        let config = test_config();
-        let mut crash_history = vec![SlotCircuit {
-            crash_times: Vec::new(),
-            open_until: None,
-            respawn_in_flight: false,
-        }];
-        for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
-            crash_history[0].record_crash();
-        }
-        assert!(
-            matches!(crash_history[0].record_crash(), CrashVerdict::CircuitOpen),
-            "setup: circuit must be open"
-        );
-
-        let agent = dummy_agent(0).await;
-        let (respawn_tx, _rx) = mpsc::channel(8);
-        let mut respawn_tasks = tokio::task::JoinSet::new();
-        let result = PromptResult {
-            agent,
-            source: PromptSource::Channel(ch),
-            turn_id: "t".into(),
-            outcome: PromptOutcome::Timeout(TimeoutKind::Hard {
-                recently_active: false,
-            }),
-            batch: None,
-        };
-
-        let mut heartbeat_in_flight = false;
-        let removed_channels = HashSet::new();
-
-        let action = handle_prompt_result(
-            &mut pool,
-            &mut queue,
-            &config,
-            result,
-            &mut heartbeat_in_flight,
-            &removed_channels,
-            &mut crash_history,
-            &respawn_tx,
-            &mut respawn_tasks,
-            None,
-            None,
-        );
-
-        assert!(
-            action == LoopAction::Exit,
-            "setup: circuit-open exit must return Exit"
-        );
-
-        // The fix: sync_dirty called before break (P3-F2).
-        sync_dirty(&mut queue, &mut ledger);
-
-        let (_, staged) = Ledger::load(dir.path(), "test_pubkey", "ws://localhost:3000", 0);
-        assert!(
-            staged.channels.is_empty(),
-            "after circuit-open exit with sync, reload must find zero recovered triggers (got: {:?})",
-            staged.channels
-        );
-    }
-
-    // ── P3-F3: persist returns success; last_written advances only on success
+    // ── Persist returns success; last_written advances only on success ──
 
     #[test]
     fn test_failed_persist_does_not_advance_last_written_allowing_retry() {
-        // P3-F3 fix: when persist fails (temp-file path blocked),
-        // `last_written` must NOT be advanced. The skip-identical check
-        // (P2-F3) compares against `last_written`; if a failed write is
-        // recorded as success, the healing retry is silently skipped.
+        // When persist fails (temp-file path blocked), `last_written` must
+        // NOT be advanced. The skip-identical check compares against
+        // `last_written`; if a failed write is recorded as success, the
+        // healing retry is silently skipped.
         //
         // Red-on-old: sync() advanced last_written before calling persist(),
         // so the second identical sync() was suppressed even though the first
@@ -9436,11 +9329,11 @@ mod boot_recovery_integration_tests {
         assert_eq!(records[0].event_id, event_a.id.to_hex());
     }
 
-    // ── P3-F3 (invalidate_channel): failed persist → different channel sync → removed channel absent
+    // ── invalidate_channel: failed persist → different channel sync → removed channel absent
 
     #[test]
     fn test_invalidate_channel_failed_persist_heals_on_subsequent_sync() {
-        // P3-F3 regression guard for invalidate_channel: when the invalidation
+        // Regression guard for invalidate_channel: when the invalidation
         // write fails (dirty flag set), a later successful sync of a DIFFERENT
         // channel must write the full map WITHOUT the removed channel, healing
         // the file.
@@ -9504,11 +9397,11 @@ mod boot_recovery_integration_tests {
         );
     }
 
-    // ── P3-F4: persisted prompt_tag through from_recovered ───────────────
+    // ── Persisted prompt_tag through from_recovered ──────────────────────
 
     #[tokio::test]
     async fn test_unresolved_resolution_uses_persisted_prompt_tag_not_live_tag() {
-        // P3-F4 fix: when a live event resolves an unresolved ledger record,
+        // When a live event resolves an unresolved ledger record,
         // the recovered QueuedEvent must use the *persisted* prompt_tag from
         // the LedgerRecord, not the live relay delivery's tag.
         //

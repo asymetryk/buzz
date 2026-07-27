@@ -292,9 +292,9 @@ pub struct FlushBatch {
 impl FlushBatch {
     /// Whether any event in this batch — fresh or merged-cancelled — is a
     /// restart-recovery replay. Gates the batch-level recovery header in
-    /// `format_prompt` (R5-F6): a mixed batch of recovered + live events
-    /// still needs per-event markers so the agent doesn't apply the
-    /// "may already be done" caveat to genuinely new work.
+    /// `format_prompt`: a mixed batch of recovered + live events still needs
+    /// per-event markers so the agent doesn't apply the "may already be
+    /// done" caveat to genuinely new work.
     pub fn has_recovered_events(&self) -> bool {
         self.events.iter().any(|be| be.restart_recovery)
             || self.cancelled_events.iter().any(|be| be.restart_recovery)
@@ -404,9 +404,9 @@ pub struct EventQueue {
     /// `lib.rs` never needs a hand-maintained list of mutation seams to
     /// sync after.
     dirty_channels: HashSet<Uuid>,
-    /// Per-channel unresolved-record ordering barrier (R6-F1). While a
-    /// channel has an entry here, `flush_next`/`has_flushable_work` refuse
-    /// to flush any of its queued events whose `admission_seq` exceeds the
+    /// Per-channel unresolved-record ordering barrier. While a channel has
+    /// an entry here, `flush_next`/`has_flushable_work` refuse to flush
+    /// any of its queued events whose `admission_seq` exceeds the
     /// barrier's lowest held seq. Cleared by resolution (`admit_recovered`),
     /// invalidation (`drain_channel`), or deadline expiry
     /// (`expire_due_unresolved_barriers`).
@@ -567,8 +567,8 @@ impl EventQueue {
         }
     }
 
-    /// Register `channel_id`'s unresolved ordering barrier (R6-F1) — called
-    /// once per channel at boot commit for every channel with unfetched
+    /// Register `channel_id`'s unresolved ordering barrier — called once
+    /// per channel at boot commit for every channel with unfetched
     /// boot-recovery triggers. `seqs` is the channel's set of unresolved
     /// `admission_seq`s; `deadline` is the shared recovery deadline
     /// (measured from boot commit) at which the barrier lifts regardless of
@@ -649,8 +649,8 @@ impl EventQueue {
     }
 
     /// Recovery-specific single-event admission for resolving an unresolved
-    /// boot-fetch record (R5-F3): bypasses `DedupMode::Drop`'s in-flight
-    /// rejection and cap accounting, and inserts `event` at its
+    /// boot-fetch record: bypasses `DedupMode::Drop`'s in-flight rejection
+    /// and cap accounting, and inserts `event` at its
     /// `admission_seq` position among the channel's queued events (not the
     /// tail) so the runtime queue matches the ledger's total order. Also
     /// releases the resolved seq from the channel's unresolved barrier, if
@@ -956,7 +956,7 @@ impl EventQueue {
     /// Also cleans up any already-expired `retry_after` entry.
     ///
     /// Private: only [`Self::complete_batch`] may call this, so no public
-    /// API can observe the requeue-then-complete intermediate state (P3-F1).
+    /// API can observe the requeue-then-complete intermediate state.
     fn mark_complete(&mut self, channel_id: Uuid) {
         self.in_flight_channels.remove(&channel_id);
         self.in_flight_deadlines.remove(&channel_id);
@@ -995,7 +995,7 @@ impl EventQueue {
     /// Note: does NOT remove from `in_flight_channels` — caller must call
     /// `mark_complete` separately.
     ///
-    /// Private: only [`Self::complete_batch`] may call this (P3-F1).
+    /// Private: only [`Self::complete_batch`] may call this.
     fn requeue(&mut self, batch: FlushBatch) -> Option<FlushBatch> {
         let channel_id = batch.channel_id;
         let attempt = {
@@ -1061,7 +1061,7 @@ impl EventQueue {
     /// Does NOT set `retry_after`. Does NOT remove from `in_flight_channels` —
     /// caller must call `mark_complete` separately.
     ///
-    /// Private: only [`Self::complete_batch`] may call this (P3-F1).
+    /// Private: only [`Self::complete_batch`] may call this.
     fn requeue_preserve_timestamps(&mut self, batch: FlushBatch) {
         let channel_id = batch.channel_id;
         let queue = self.queues.entry(channel_id).or_default();
@@ -1084,7 +1084,7 @@ impl EventQueue {
     /// the generic queue — they are stored separately and merged by
     /// `flush_next()`. No retry throttle, no backoff.
     ///
-    /// Private: only [`Self::complete_batch`] may call this (P3-F1).
+    /// Private: only [`Self::complete_batch`] may call this.
     fn requeue_as_cancelled(&mut self, batch: FlushBatch, reason: CancelReason) {
         let entry = self.cancelled_batches.entry(batch.channel_id).or_default();
         // Preserve any already-cancelled events from a prior cancel (double-cancel).
@@ -1094,14 +1094,14 @@ impl EventQueue {
     }
 
     /// Apply a batch's completion disposition and mark its channel's prompt
-    /// complete as one atomic transition (P3-F1).
+    /// complete as one atomic transition.
     ///
     /// `batch` is `None` for [`BatchDisposition::Success`] (nothing to
     /// requeue). Every nonterminal disposition restores **both** payload
     /// vectors — `events` per the disposition's own semantics, and any
     /// `cancelled_events` back into `cancelled_batches` with the batch's
-    /// `cancel_reason` — exactly once (R5-F1), so a mixed batch never loses
-    /// its cancelled half to a `Retry` or `PreserveTimestamps` disposition.
+    /// `cancel_reason` — exactly once, so a mixed batch never loses its
+    /// cancelled half to a `Retry` or `PreserveTimestamps` disposition.
     ///
     /// Returns any dead-lettered batch (`Retry` exhaustion) for the caller's
     /// error log, as `requeue()` did before this replaced it. Always leaves
@@ -2146,9 +2146,9 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
         sections.push(format_conversation_context(ctx, args.profile_lookup));
     }
 
-    // 3b. Restart-recovery header (R5-F6). Scoped explicitly so a mixed
-    // batch (recovered backlog + fresh live event) isn't misread as "the
-    // whole batch may already be done" — only events individually marked
+    // 3b. Restart-recovery header. Scoped explicitly so a mixed batch
+    // (recovered backlog + fresh live event) isn't misread as "the whole
+    // batch may already be done" — only events individually marked
     // `[restart recovery]` below carry that caveat.
     if batch.has_recovered_events() {
         sections.push(
@@ -2238,7 +2238,7 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
 /// Per-event provenance tag appended to an event's header line — `""` for
 /// live events, `" [restart recovery]"` for boot-recovered replays. Scoped
 /// per event (not per batch) so a mixed batch's fresh events are never
-/// mistaken for already-answered recovered ones (R5-F6).
+/// mistaken for already-answered recovered ones.
 fn recovery_marker(be: &BatchEvent) -> &'static str {
     if be.restart_recovery {
         " [restart recovery]"
@@ -2632,8 +2632,7 @@ mod tests {
         // A recovered backlog event batched with a fresh live event: the
         // header must appear (batch has at least one recovered event), but
         // only the recovered event's header line carries the per-event
-        // marker — the live event must read as new, unambiguous work
-        // (R5-F6's scoped no-op rule).
+        // marker — the live event must read as new, unambiguous work.
         let ch = Uuid::new_v4();
         let batch = FlushBatch {
             channel_id: ch,
@@ -5893,8 +5892,8 @@ mod tests {
         assert!(
             !triggers[1].cap_exempt,
             "import_recovered must not promote a record the caller left counted \
-             — this is exactly the P2-F2(b) regression: import_recovered has no \
-             business re-deriving promotion from a partial (fetched-only) view"
+             — import_recovered has no business re-deriving promotion from a \
+             partial (fetched-only) view"
         );
     }
 
