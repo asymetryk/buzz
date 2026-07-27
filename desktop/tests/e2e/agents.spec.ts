@@ -195,6 +195,22 @@ async function invokeTauriExpectError(
   );
 }
 
+async function countCommandInvocations(
+  page: import("@playwright/test").Page,
+  command: string,
+): Promise<number> {
+  return page.evaluate(
+    (targetCommand) =>
+      (
+        window as Window & {
+          __BUZZ_E2E_COMMANDS__?: string[];
+        }
+      ).__BUZZ_E2E_COMMANDS__?.filter((invoked) => invoked === targetCommand)
+        .length ?? 0,
+    command,
+  );
+}
+
 test("catalog hides built-ins and shows the shared-agent empty state", async ({
   page,
 }) => {
@@ -1462,6 +1478,17 @@ This deliberately long fenced-code example must not establish the minimum width 
   ).toHaveCount(0);
   await editDialog.getByRole("button", { name: "Save and publish" }).click();
   await expect(editDialog).toHaveCount(0);
+  // The promise in the button label is only kept by the command that awaits the
+  // relay; a plain `update_persona` merely enqueues a head best-effort.
+  await expect
+    .poll(() => countCommandInvocations(page, "update_persona_and_publish"))
+    .toBe(1);
+  expect(await countCommandInvocations(page, "update_persona")).toBe(0);
+  await expect(
+    page.getByText(
+      "Updated Catalog Analyst and published it to the community catalog.",
+    ),
+  ).toBeVisible();
 
   await openPersonaCatalog(page);
   await selectCatalogPersona(page, personaId);
@@ -1588,18 +1615,7 @@ test("a community member can discover and add another member's catalog agent", a
     })
     .click();
   await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          (
-            window as Window & {
-              __BUZZ_E2E_COMMANDS__?: string[];
-            }
-          ).__BUZZ_E2E_COMMANDS__?.filter(
-            (command) => command === "create_persona",
-          ).length ?? 0,
-      ),
-    )
+    .poll(() => countCommandInvocations(page, "create_persona"))
     .toBe(1);
   const imported = await invokeTauri<
     Array<{ display_name: string; system_prompt: string; shared: boolean }>

@@ -76,26 +76,31 @@ export async function createPersona(
   );
 }
 
+/** The `UpdatePersonaRequest` payload shared by both edit commands. */
+function updatePersonaPayload(input: UpdatePersonaInput) {
+  return {
+    id: input.id,
+    displayName: input.displayName,
+    avatarUrl: input.avatarUrl,
+    systemPrompt: input.systemPrompt,
+    runtime: input.runtime,
+    model: input.model,
+    provider: input.provider,
+    namePool: input.namePool ?? [],
+    // Send envVars only when caller explicitly provided it; omitting
+    // tells the backend "don't touch the stored env vars" so editing
+    // unrelated fields can't silently wipe saved credentials.
+    envVars: input.envVars,
+    // Same absent-vs-present contract as envVars for the behavioral quad.
+    behavior: input.behavior,
+  };
+}
+
 export async function updatePersona(
   input: UpdatePersonaInput,
 ): Promise<AgentPersona> {
   const raw = await invokeTauri<RawPersona>("update_persona", {
-    input: {
-      id: input.id,
-      displayName: input.displayName,
-      avatarUrl: input.avatarUrl,
-      systemPrompt: input.systemPrompt,
-      runtime: input.runtime,
-      model: input.model,
-      provider: input.provider,
-      namePool: input.namePool ?? [],
-      // Send envVars only when caller explicitly provided it; omitting
-      // tells the backend "don't touch the stored env vars" so editing
-      // unrelated fields can't silently wipe saved credentials.
-      envVars: input.envVars,
-      // Same absent-vs-present contract as envVars for the behavioral quad.
-      behavior: input.behavior,
-    },
+    input: updatePersonaPayload(input),
   });
   if (raw.writeback_warning) {
     console.warn(
@@ -103,6 +108,41 @@ export async function updatePersona(
     );
   }
   return fromRawPersona(raw);
+}
+
+/**
+ * Save an edit AND publish the persona's catalog head, reporting whether the
+ * relay accepted it.
+ *
+ * `updatePersona` only enqueues the head best-effort, so it cannot tell the UI
+ * whether the community catalog actually received the change. Use this for the
+ * "Save and publish" affordance, which promises exactly that.
+ */
+export async function updatePersonaAndPublish(
+  input: UpdatePersonaInput,
+): Promise<PersonaSharePublicationResult> {
+  return fromRawPublicationResult(
+    await invokeTauri<RawPersonaSharePublicationResult>(
+      "update_persona_and_publish",
+      { input: updatePersonaPayload(input) },
+    ),
+  );
+}
+
+type RawPersonaSharePublicationResult = {
+  persona: RawPersona;
+  publicationStatus: "published" | "queued";
+  relayMessage?: string;
+};
+
+function fromRawPublicationResult(
+  raw: RawPersonaSharePublicationResult,
+): PersonaSharePublicationResult {
+  return {
+    persona: fromRawPersona(raw.persona),
+    publicationStatus: raw.publicationStatus,
+    relayMessage: raw.relayMessage ?? null,
+  };
 }
 
 export async function deletePersona(id: string): Promise<void> {
@@ -122,16 +162,12 @@ export async function setPersonaShared(
   id: string,
   shared: boolean,
 ): Promise<PersonaSharePublicationResult> {
-  const result = await invokeTauri<{
-    persona: RawPersona;
-    publicationStatus: "published" | "queued";
-    relayMessage?: string;
-  }>("set_persona_shared", { id, shared });
-  return {
-    persona: fromRawPersona(result.persona),
-    publicationStatus: result.publicationStatus,
-    relayMessage: result.relayMessage ?? null,
-  };
+  return fromRawPublicationResult(
+    await invokeTauri<RawPersonaSharePublicationResult>("set_persona_shared", {
+      id,
+      shared,
+    }),
+  );
 }
 
 export type PersonaSharePublicationResult = {

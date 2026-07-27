@@ -7389,43 +7389,51 @@ async function handleCreatePersona(args: {
   return { ...persona };
 }
 
+type MockUpdatePersonaInput = {
+  id: string;
+  displayName: string;
+  avatarUrl?: string;
+  systemPrompt: string;
+  runtime?: string;
+  model?: string;
+  provider?: string;
+  envVars?: Record<string, string>;
+  behavior?: PersonaBehaviorInput;
+};
+
 async function handleUpdatePersona(args: {
-  input: {
-    id: string;
-    displayName: string;
-    avatarUrl?: string;
-    systemPrompt: string;
-    runtime?: string;
-    model?: string;
-    provider?: string;
-    envVars?: Record<string, string>;
-    behavior?: PersonaBehaviorInput;
-  };
+  input: MockUpdatePersonaInput;
 }): Promise<RawPersona> {
-  const persona = mockPersonas.find(
-    (candidate) => candidate.id === args.input.id,
-  );
+  return { ...applyMockPersonaUpdate(args.input) };
+}
+
+/**
+ * Save an edit to the mock persona store, exactly like `update_persona_with`,
+ * and return the live record so a caller can publish it.
+ */
+function applyMockPersonaUpdate(input: MockUpdatePersonaInput): RawPersona {
+  const persona = mockPersonas.find((candidate) => candidate.id === input.id);
   if (!persona) {
-    throw new Error(`agent ${args.input.id} not found`);
+    throw new Error(`agent ${input.id} not found`);
   }
-  persona.display_name = args.input.displayName.trim();
-  persona.avatar_url = args.input.avatarUrl?.trim() || null;
-  persona.system_prompt = args.input.systemPrompt.trim();
-  persona.runtime = args.input.runtime?.trim() || null;
-  persona.model = args.input.model?.trim() || null;
-  persona.provider = args.input.provider?.trim() || null;
-  if (args.input.envVars !== undefined) {
+  persona.display_name = input.displayName.trim();
+  persona.avatar_url = input.avatarUrl?.trim() || null;
+  persona.system_prompt = input.systemPrompt.trim();
+  persona.runtime = input.runtime?.trim() || null;
+  persona.model = input.model?.trim() || null;
+  persona.provider = input.provider?.trim() || null;
+  if (input.envVars !== undefined) {
     // Absent = preserve; present = replace entirely (matches Rust handler).
-    persona.env_vars = { ...args.input.envVars };
+    persona.env_vars = { ...input.envVars };
   }
-  applyMockPersonaBehavior(persona, args.input.behavior);
+  applyMockPersonaBehavior(persona, input.behavior);
   persona.updated_at = new Date().toISOString();
   upsertMockPersonaEvent(persona);
 
   for (const callback of tauriEventListeners.get("agents-data-changed") ?? []) {
     callback();
   }
-  return { ...persona };
+  return persona;
 }
 
 async function handleDeletePersona(args: { id: string }): Promise<void> {
@@ -7531,26 +7539,21 @@ function upsertMockPersonaEvent(persona: RawPersona): void {
   emitMockGlobalEvent(event);
 }
 
-async function handleSetPersonaShared(
-  args: {
-    id: string;
-    shared: boolean;
-  },
-  config?: E2eConfig,
-): Promise<{
+type MockPersonaPublicationResult = {
   persona: RawPersona;
   publicationStatus: "published" | "queued";
   relayMessage?: string;
-}> {
-  const persona = mockPersonas.find((candidate) => candidate.id === args.id);
-  if (!persona) {
-    throw new Error(`agent ${args.id} not found`);
-  }
-  if (persona.is_builtin) {
-    throw new Error("Built-in agents cannot be shared to the catalog.");
-  }
-  persona.shared = args.shared;
-  persona.updated_at = new Date().toISOString();
+};
+
+/**
+ * Publish a persona's catalog head and report the relay outcome, like
+ * `publish_prepared_persona`. A `queued` outcome must NOT make the event
+ * visible to catalog readers — that is the whole distinction the UI reports.
+ */
+function publishMockPersonaHead(
+  persona: RawPersona,
+  config: E2eConfig | undefined,
+): MockPersonaPublicationResult {
   const publicationStatus =
     config?.mock?.personaSharePublicationStatuses?.[
       personaSharePublicationCallCount++
@@ -7565,6 +7568,33 @@ async function handleSetPersonaShared(
       ? { relayMessage: "relay unreachable: could not connect to relay" }
       : {}),
   };
+}
+
+async function handleSetPersonaShared(
+  args: {
+    id: string;
+    shared: boolean;
+  },
+  config?: E2eConfig,
+): Promise<MockPersonaPublicationResult> {
+  const persona = mockPersonas.find((candidate) => candidate.id === args.id);
+  if (!persona) {
+    throw new Error(`agent ${args.id} not found`);
+  }
+  if (persona.is_builtin) {
+    throw new Error("Built-in agents cannot be shared to the catalog.");
+  }
+  persona.shared = args.shared;
+  persona.updated_at = new Date().toISOString();
+  return publishMockPersonaHead(persona, config);
+}
+
+/** Mirrors `update_persona_and_publish`: save the edit, then await the relay. */
+async function handleUpdatePersonaAndPublish(
+  args: { input: MockUpdatePersonaInput },
+  config?: E2eConfig,
+): Promise<MockPersonaPublicationResult> {
+  return publishMockPersonaHead(applyMockPersonaUpdate(args.input), config);
 }
 
 function ensureMockPersonaIsActive(personaId: string) {
@@ -10317,6 +10347,11 @@ export function maybeInstallE2eTauriMocks() {
       case "update_persona":
         return handleUpdatePersona(
           payload as Parameters<typeof handleUpdatePersona>[0],
+        );
+      case "update_persona_and_publish":
+        return handleUpdatePersonaAndPublish(
+          payload as Parameters<typeof handleUpdatePersonaAndPublish>[0],
+          activeConfig,
         );
       case "delete_persona":
         return handleDeletePersona(

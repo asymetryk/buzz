@@ -5,9 +5,13 @@ import {
   fetchPersonaCatalogPublications,
   type PersonaCatalogPublication,
 } from "@/features/agents/lib/personaCatalogRelay";
+import { invalidatePersonaEditCaches } from "@/features/agents/lib/personaEditCaches";
 import { relayClient } from "@/shared/api/relayClient";
-import { setPersonaShared } from "@/shared/api/tauriPersonas";
-import type { AgentPersona } from "@/shared/api/types";
+import {
+  setPersonaShared,
+  updatePersonaAndPublish,
+} from "@/shared/api/tauriPersonas";
+import type { AgentPersona, UpdatePersonaInput } from "@/shared/api/types";
 import { KIND_PERSONA } from "@/shared/constants/kinds";
 
 export function personaCatalogQueryKey(communityId: string | null) {
@@ -82,6 +86,30 @@ export function useSetPersonaCatalogSharedMutation(communityId: string | null) {
       void queryClient.invalidateQueries({
         queryKey: personaCatalogQueryKey(communityId),
       });
+    },
+  });
+}
+
+/**
+ * Save a persona edit and publish its catalog head, reporting the relay's
+ * verdict.
+ *
+ * The plain edit mutation only enqueues the head best-effort, so it cannot back
+ * the "Save and publish" promise. This awaits the relay and additionally
+ * refreshes the catalog query, since the published edit changes what the
+ * catalog shows.
+ */
+export function useUpdatePersonaAndPublishMutation(communityId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdatePersonaInput) => updatePersonaAndPublish(input),
+    onSettled: async (_data, _error, variables) => {
+      await Promise.all([
+        invalidatePersonaEditCaches(queryClient, variables.id),
+        queryClient.invalidateQueries({
+          queryKey: personaCatalogQueryKey(communityId),
+        }),
+      ]);
     },
   });
 }

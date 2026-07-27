@@ -296,9 +296,11 @@ export function AgentsView() {
           error={
             personas.updatePersonaMutation.error instanceof Error
               ? personas.updatePersonaMutation.error
-              : personas.createPersonaMutation.error instanceof Error
-                ? personas.createPersonaMutation.error
-                : null
+              : personas.updatePersonaAndPublishMutation.error instanceof Error
+                ? personas.updatePersonaAndPublishMutation.error
+                : personas.createPersonaMutation.error instanceof Error
+                  ? personas.createPersonaMutation.error
+                  : null
           }
           initialValues={personas.personaDialogState.initialValues}
           isPending={personas.isPending}

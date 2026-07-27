@@ -30,7 +30,9 @@ import {
   usePersonaCatalogLiveUpdates,
   usePersonaCatalogQuery,
   useSetPersonaCatalogSharedMutation,
+  useUpdatePersonaAndPublishMutation,
 } from "@/features/agents/lib/usePersonaCatalogRelay";
+import { personaSaveNotice } from "@/features/agents/lib/personaSaveNotice";
 import { useCreatedAgentChannelAttachment } from "@/features/agents/useCreatedAgentChannelAttachment";
 import { useCommunities } from "@/features/communities/useCommunities";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -81,6 +83,8 @@ export function usePersonaActions() {
   const createAgentMutation = useCreateManagedAgentMutation();
   const createPersonaMutation = useCreatePersonaMutation();
   const updatePersonaMutation = useUpdatePersonaMutation();
+  const updatePersonaAndPublishMutation =
+    useUpdatePersonaAndPublishMutation(communityId);
   const deletePersonaMutation = useDeletePersonaMutation();
   const setPersonaActiveMutation = useSetPersonaActiveMutation();
   const exportAgentSnapshotMutation = useExportAgentSnapshotMutation();
@@ -170,7 +174,7 @@ export function usePersonaActions() {
     intent?: AgentCreateIntent,
     backendIntent?: BackendIntent | null,
     targetChannel?: Pick<Channel, "id" | "name"> | null,
-    _options?: { publishCatalogUpdates?: boolean },
+    options?: { publishCatalogUpdates?: boolean },
   ): Promise<boolean> {
     if (isPersonaSubmitPending) {
       return false;
@@ -180,8 +184,24 @@ export function usePersonaActions() {
     setIsPersonaSubmitPending(true);
     try {
       if ("id" in input) {
-        await updatePersonaMutation.mutateAsync(input);
-        setPersonaNoticeMessage(`Updated ${input.displayName}.`);
+        // "Save and publish" promises the community catalog sees this edit, so
+        // it must use the command that awaits the relay. A plain save only
+        // enqueues the head and cannot report the outcome.
+        if (options?.publishCatalogUpdates) {
+          const result =
+            await updatePersonaAndPublishMutation.mutateAsync(input);
+          if (result.publicationStatus === "queued" && result.relayMessage) {
+            console.warn(
+              `[updatePersonaAndPublish] relay publication queued: ${result.relayMessage}`,
+            );
+          }
+          setPersonaNoticeMessage(
+            personaSaveNotice(input.displayName, result.publicationStatus),
+          );
+        } else {
+          await updatePersonaMutation.mutateAsync(input);
+          setPersonaNoticeMessage(personaSaveNotice(input.displayName, null));
+        }
       } else {
         const runtime = availableRuntimes.find(
           (candidate) => candidate.id === input.runtime,
@@ -523,6 +543,7 @@ export function usePersonaActions() {
     createPersonaMutation.isPending ||
     createAgentMutation.isPending ||
     updatePersonaMutation.isPending ||
+    updatePersonaAndPublishMutation.isPending ||
     deletePersonaMutation.isPending ||
     setPersonaActiveMutation.isPending ||
     exportAgentSnapshotMutation.isPending ||
@@ -536,6 +557,7 @@ export function usePersonaActions() {
     acpRuntimesQuery,
     createPersonaMutation,
     updatePersonaMutation,
+    updatePersonaAndPublishMutation,
     setPersonaActiveMutation,
     catalogPersonas,
     libraryPersonas,
