@@ -7422,6 +7422,12 @@ async function handleUpdatePersona(args: {
 /**
  * Save an edit to the mock persona store, exactly like `update_persona_with`,
  * and return the live record so a caller can publish it.
+ *
+ * Deliberately does NOT publish a catalog event: the real `update_persona`
+ * only enqueues a pending head for the out-of-band flush loop, so nothing has
+ * reached the relay by the time the command returns. Publishing here would
+ * make a UI that never calls `update_persona_and_publish` look like it kept
+ * the "Save and publish" promise.
  */
 function applyMockPersonaUpdate(input: MockUpdatePersonaInput): RawPersona {
   const persona = mockPersonas.find((candidate) => candidate.id === input.id);
@@ -7440,7 +7446,6 @@ function applyMockPersonaUpdate(input: MockUpdatePersonaInput): RawPersona {
   }
   applyMockPersonaBehavior(persona, input.behavior);
   persona.updated_at = new Date().toISOString();
-  upsertMockPersonaEvent(persona);
 
   for (const callback of tauriEventListeners.get("agents-data-changed") ?? []) {
     callback();
