@@ -110,6 +110,11 @@ void main() {
 
     final cancel = find.byKey(const Key('search-cancel'));
     expect(cancel, findsOneWidget);
+    expect(
+      tester.getSize(cancel).height,
+      greaterThanOrEqualTo(Grid.xl),
+      reason: 'Cancel must keep a 48dp touch target.',
+    );
     expect(tester.widget<TextField>(searchField).decoration?.hintText, isNull);
     final enteringSlide = tester.widget<SlideTransition>(
       find.ancestor(of: cancel, matching: find.byType(SlideTransition)).first,
