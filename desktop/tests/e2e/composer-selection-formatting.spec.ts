@@ -38,6 +38,39 @@ async function selectText(input: Locator, selectedText: string) {
   }, selectedText);
 }
 
+async function selectTextRange(
+  input: Locator,
+  firstText: string,
+  lastText: string,
+) {
+  await input.evaluate(
+    (element, texts) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let first: Text | null = null;
+      let last: Text | null = null;
+      while (walker.nextNode()) {
+        const node = walker.currentNode as Text;
+        if (!first && node.data.includes(texts.firstText)) first = node;
+        if (node.data.includes(texts.lastText)) last = node;
+      }
+      if (!(first && last))
+        throw new Error("Could not find selection endpoints");
+      const range = document.createRange();
+      range.setStart(first, first.data.indexOf(texts.firstText));
+      range.setEnd(
+        last,
+        last.data.indexOf(texts.lastText) + texts.lastText.length,
+      );
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      (element as HTMLElement).focus();
+      document.dispatchEvent(new Event("selectionchange"));
+    },
+    { firstText, lastText },
+  );
+}
+
 async function dragSelectText(
   page: Page,
   input: Locator,
@@ -209,6 +242,111 @@ for (const format of [
     await expect(input.locator(":scope > p").last()).toHaveText("after");
   });
 }
+
+for (const list of [
+  { label: "Bullet list", selector: "ul" },
+  { label: "Ordered list", selector: "ol" },
+] as const) {
+  test(`selected hard-break lines become separate ${list.label.toLowerCase()} items`, async ({
+    page,
+  }) => {
+    await openGeneral(page);
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.pressSequentially("one");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("two");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("three");
+    await selectTextRange(input, "one", "three");
+    await page
+      .getByTestId("selection-formatting-tray")
+      .getByRole("button", { name: list.label })
+      .click();
+
+    const items = input.locator(`:scope > ${list.selector} > li`);
+    await expect(items).toHaveCount(3);
+    await expect(items).toHaveText(["one", "two", "three"]);
+  });
+}
+
+test("selected hard-break lines stay newline-separated in one code block", async ({
+  page,
+}) => {
+  await openGeneral(page);
+  const input = page.getByTestId("message-input");
+  await input.click();
+  await input.pressSequentially("one");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("two");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("three");
+  await selectTextRange(input, "one", "three");
+  await page
+    .getByTestId("selection-formatting-tray")
+    .getByRole("button", { name: "Code block" })
+    .click();
+
+  await expect(input.locator(":scope > pre")).toHaveCount(1);
+  await expect(input.locator(":scope > pre")).toHaveText("one\ntwo\nthree");
+
+  await page.getByTestId("send-message").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_SIGNED_EVENTS__?: Array<{ content: string }>;
+            }
+          ).__BUZZ_E2E_SIGNED_EVENTS__?.at(-1)?.content,
+      ),
+    )
+    .toBe("```\none\ntwo\nthree\n```");
+});
+
+test("selected list items become one multiline code block and keep neighbors", async ({
+  page,
+}) => {
+  await openGeneral(page);
+  const input = page.getByTestId("message-input");
+  await input.click();
+  await input.pressSequentially("before");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("one");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("two");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("after");
+  await selectTextRange(input, "before", "after");
+  await page
+    .getByTestId("selection-formatting-tray")
+    .getByRole("button", { name: "Bullet list" })
+    .click();
+  await selectTextRange(input, "one", "two");
+  await page
+    .getByTestId("selection-formatting-tray")
+    .getByRole("button", { name: "Code block" })
+    .click();
+
+  await expect(input.locator(":scope > pre")).toHaveCount(1);
+  await expect(input.locator(":scope > pre")).toHaveText("one\ntwo");
+  await expect(input.locator(":scope > ul li")).toHaveText(["before", "after"]);
+
+  await page.getByTestId("send-message").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_SIGNED_EVENTS__?: Array<{ content: string }>;
+            }
+          ).__BUZZ_E2E_SIGNED_EVENTS__?.at(-1)?.content,
+      ),
+    )
+    .toBe("- before\n\n```\none\ntwo\n```\n\n- after");
+});
 
 test("caret-only block formatting serializes the prior draft unchanged", async ({
   page,

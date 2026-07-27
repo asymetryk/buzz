@@ -1,3 +1,4 @@
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { TextSelection, type Transaction } from "@tiptap/pm/state";
 import { canSplit } from "@tiptap/pm/transform";
 
@@ -146,6 +147,96 @@ export function isolateSelectionForBlockFormatting(
       isBackward ? to : from,
       isBackward ? from : to,
     ),
+  );
+  return true;
+}
+
+/** Split each selected hard-break line into a textblock before list wrapping. */
+export function splitSelectedLinesForListFormatting(
+  transaction: Transaction,
+): boolean {
+  if (!(transaction.selection instanceof TextSelection)) return false;
+  if (transaction.selection.empty) {
+    return isolateCaretLineForBlockFormatting(transaction);
+  }
+
+  const isBackward = transaction.selection.anchor > transaction.selection.head;
+  isolateSelectionForBlockFormatting(transaction);
+  let { from, to } = transaction.selection;
+  const breakPositions: number[] = [];
+
+  transaction.doc.nodesBetween(from, to, (node, position) => {
+    if (node.type.name === "hardBreak") breakPositions.push(position);
+  });
+
+  for (const position of breakPositions.reverse()) {
+    transaction.delete(position, position + 1);
+    ({ from, to } = mapRangeThroughLatestStep(transaction, from, to));
+    if (!canSplit(transaction.doc, position)) continue;
+    transaction.split(position);
+    ({ from, to } = mapRangeThroughLatestStep(transaction, from, to));
+  }
+
+  transaction.setSelection(
+    TextSelection.create(
+      transaction.doc,
+      isBackward ? to : from,
+      isBackward ? from : to,
+    ),
+  );
+  return true;
+}
+
+function selectedTextblocks(
+  transaction: Transaction,
+): Array<{ node: ProseMirrorNode; position: number }> {
+  const blocks: Array<{ node: ProseMirrorNode; position: number }> = [];
+  const { from, to } = transaction.selection;
+  transaction.doc.nodesBetween(
+    Math.max(0, from - 1),
+    Math.min(transaction.doc.content.size, to + 1),
+    (node, position) => {
+      if (node.isTextblock) {
+        blocks.push({ node, position });
+        return false;
+      }
+      return true;
+    },
+  );
+  return blocks;
+}
+
+function textblockTextForCode(node: ProseMirrorNode): string {
+  return node.textBetween(0, node.content.size, "\n", (leaf) =>
+    leaf.type.name === "hardBreak"
+      ? "\n"
+      : (leaf.type.spec.leafText?.(leaf) ?? ""),
+  );
+}
+
+/** Replace selected textblocks with one newline-joined code block. */
+export function mergeSelectedTextblocksIntoCodeBlock(
+  transaction: Transaction,
+): boolean {
+  if (!(transaction.selection instanceof TextSelection)) return false;
+  if (transaction.selection.empty) {
+    isolateCaretLineForBlockFormatting(transaction);
+    return false;
+  }
+
+  const blocks = selectedTextblocks(transaction);
+  const codeBlock = transaction.doc.type.schema.nodes.codeBlock;
+  const first = blocks[0];
+  const last = blocks.at(-1);
+  if (!(codeBlock && first && last)) return false;
+
+  const text = blocks.map(({ node }) => textblockTextForCode(node)).join("\n");
+  const from = first.position;
+  const to = last.position + last.node.nodeSize;
+  const content = text ? transaction.doc.type.schema.text(text) : undefined;
+  transaction.replaceWith(from, to, codeBlock.create(null, content));
+  transaction.setSelection(
+    TextSelection.create(transaction.doc, from + 1, from + 1 + text.length),
   );
   return true;
 }

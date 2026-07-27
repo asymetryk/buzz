@@ -16,7 +16,11 @@ import {
 
 import { cn } from "@/shared/lib/cn";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { isolateSelectionForBlockFormatting } from "@/features/messages/lib/selectionBlockFormatting";
+import {
+  isolateSelectionForBlockFormatting,
+  mergeSelectedTextblocksIntoCodeBlock,
+  splitSelectedLinesForListFormatting,
+} from "@/features/messages/lib/selectionBlockFormatting";
 import { getEditorSpoilerRangeState } from "@/features/messages/lib/spoilerFormatting";
 import { SPOILER_MARK_NAME } from "@/features/messages/lib/spoilerMark";
 
@@ -196,14 +200,35 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
   }, [formattingChain]);
 
   const toggleCodeBlock = React.useCallback(() => {
-    formattingChain()
-      ?.command(({ tr }) => {
-        isolateSelectionForBlockFormatting(tr);
-        return true;
-      })
-      .toggleCodeBlock()
+    const chain = formattingChain();
+    if (!chain) return;
+    if (editor?.state.selection.empty) {
+      chain
+        .command(({ tr }) => {
+          isolateSelectionForBlockFormatting(tr);
+          return true;
+        })
+        .toggleCodeBlock()
+        .run();
+      return;
+    }
+
+    const selection = editor?.state.selection;
+    const isInList = selection
+      ? Array.from(
+          { length: selection.$from.depth + 1 },
+          (_, depth) => selection.$from.node(depth).type.name,
+        ).some((name) => name === "bulletList" || name === "orderedList")
+      : false;
+    let conversion = chain.command(({ tr }) => {
+      isolateSelectionForBlockFormatting(tr);
+      return true;
+    });
+    if (isInList) conversion = conversion.clearNodes();
+    conversion
+      .command(({ tr }) => mergeSelectedTextblocksIntoCodeBlock(tr))
       .run();
-  }, [formattingChain]);
+  }, [editor, formattingChain]);
 
   const restorePendingSelection = React.useCallback(() => {
     formattingChain()?.run();
@@ -251,7 +276,7 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
   const toggleBulletList = React.useCallback(() => {
     formattingChain()
       ?.command(({ tr }) => {
-        isolateSelectionForBlockFormatting(tr);
+        splitSelectedLinesForListFormatting(tr);
         return true;
       })
       .toggleBulletList()
@@ -261,7 +286,7 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
   const toggleOrderedList = React.useCallback(() => {
     formattingChain()
       ?.command(({ tr }) => {
-        isolateSelectionForBlockFormatting(tr);
+        splitSelectedLinesForListFormatting(tr);
         return true;
       })
       .toggleOrderedList()
