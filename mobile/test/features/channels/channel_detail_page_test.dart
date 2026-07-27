@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
@@ -628,7 +629,7 @@ void main() {
       );
     });
 
-    testWidgets('can jump back to latest when newer messages are offscreen', (
+    testWidgets('can jump back to latest after a non-drag user scroll', (
       tester,
     ) async {
       final initialMessages = [
@@ -655,7 +656,7 @@ void main() {
 
       final messageList = find.byKey(const ValueKey('channel-message-list'));
       final messageListElement = tester.element(messageList);
-      ScrollStartNotification(
+      UserScrollNotification(
         metrics: FixedScrollMetrics(
           minScrollExtent: 0,
           maxScrollExtent: 100,
@@ -665,7 +666,7 @@ void main() {
           devicePixelRatio: 1,
         ),
         context: messageListElement,
-        dragDetails: DragStartDetails(),
+        direction: ScrollDirection.reverse,
       ).dispatch(messageListElement);
       final listView = tester.widget<ScrollablePositionedList>(messageList);
       listView.itemScrollController!.jumpTo(index: 39);

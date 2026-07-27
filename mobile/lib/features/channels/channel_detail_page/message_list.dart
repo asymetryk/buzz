@@ -93,7 +93,7 @@ class _MessageList extends HookConsumerWidget {
           if (!isAtLatest.value) isAtLatest.value = true;
         } else if (followsLatest.value && !hasUserScrolled.value) {
           // The viewport can shrink when the composer or keyboard opens.
-          // Preserve auto-follow until the user actually drags the timeline.
+          // Preserve auto-follow until the user scrolls the timeline.
           if (!isAtLatest.value) isAtLatest.value = true;
           scheduleAutoScrollToLatest();
         } else if (isAtLatest.value) {
@@ -220,8 +220,8 @@ class _MessageList extends HookConsumerWidget {
       children: [
         NotificationListener<ScrollNotification>(
           onNotification: (notification) {
-            if (notification is ScrollStartNotification &&
-                notification.dragDetails != null) {
+            if (notification is UserScrollNotification &&
+                notification.direction != ScrollDirection.idle) {
               hasUserScrolled.value = true;
               followsLatest.value = false;
             } else if (notification is ScrollEndNotification &&

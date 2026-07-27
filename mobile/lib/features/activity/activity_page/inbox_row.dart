@@ -1,5 +1,40 @@
 part of '../activity_page.dart';
 
+/// "New" boundary between unread and previously read rows.
+class _NewBoundaryDivider extends StatelessWidget {
+  const _NewBoundaryDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: Grid.gutter,
+        vertical: Grid.half,
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Divider(color: context.colors.error.withValues(alpha: 0.5)),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Grid.xxs),
+            child: Text(
+              'New',
+              style: context.textTheme.labelSmall?.copyWith(
+                color: context.colors.error,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Divider(color: context.colors.error.withValues(alpha: 0.5)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// One conversation row, matching desktop's inbox item hierarchy:
 /// avatar | sender + unread dot + time | contextual label | preview.
 class _InboxRow extends ConsumerWidget {
