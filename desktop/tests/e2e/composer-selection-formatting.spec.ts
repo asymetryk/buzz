@@ -93,7 +93,7 @@ async function dragSelectText(
 async function applySelectionFormat(
   page: Page,
   input: Locator,
-  label: "Bullet list" | "Code block" | "Ordered list",
+  label: "Bullet list" | "Code block" | "Ordered list" | "Quote",
   collapseAfterMouseDown = false,
   useMouseSelection = false,
 ) {
@@ -136,10 +136,19 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
+async function applyCaretFormat(
+  page: Page,
+  label: "Bullet list" | "Code block" | "Ordered list" | "Quote",
+) {
+  await page.getByRole("button", { name: "Toggle formatting" }).first().click();
+  await page.getByRole("button", { name: label, exact: true }).click();
+}
+
 for (const format of [
   { label: "Code block", selector: "pre" },
   { label: "Bullet list", selector: "ul" },
   { label: "Ordered list", selector: "ol" },
+  { label: "Quote", selector: "blockquote" },
 ] as const) {
   test(`${format.label} applies only to the selected composer text`, async ({
     page,
@@ -157,7 +166,76 @@ for (const format of [
     await expect(input.locator(":scope > p").last()).toHaveText(" after");
     await expect(input).toHaveText("before selected after");
   });
+
+  test(`${format.label} starts at a collapsed caret on a new line`, async ({
+    page,
+  }) => {
+    await openGeneral(page);
+
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.pressSequentially("before");
+    await input.press("Shift+Enter");
+    await applyCaretFormat(page, format.label);
+    await input.pressSequentially("inside");
+
+    await expect(input.locator(":scope > p").first()).toHaveText("before");
+    await expect(input.locator(`:scope > ${format.selector}`)).toHaveText(
+      "inside",
+    );
+  });
+
+  test(`${format.label} at a collapsed caret formats only the caret's line`, async ({
+    page,
+  }) => {
+    await openGeneral(page);
+
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.pressSequentially("before");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("target");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("after");
+    // Collapse the caret into the middle line.
+    await selectText(input, "target");
+    await input.press("ArrowRight");
+    await applyCaretFormat(page, format.label);
+
+    await expect(input.locator(":scope > p").first()).toHaveText("before");
+    await expect(input.locator(`:scope > ${format.selector}`)).toHaveText(
+      "target",
+    );
+    await expect(input.locator(":scope > p").last()).toHaveText("after");
+  });
 }
+
+test("caret-only block formatting serializes the prior draft unchanged", async ({
+  page,
+}) => {
+  await openGeneral(page);
+
+  const input = page.getByTestId("message-input");
+  await input.click();
+  await input.pressSequentially("before");
+  await input.press("Shift+Enter");
+  await applyCaretFormat(page, "Bullet list");
+  await input.pressSequentially("item");
+
+  await page.getByTestId("send-message").click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (
+            window as Window & {
+              __BUZZ_E2E_SIGNED_EVENTS__?: Array<{ content: string }>;
+            }
+          ).__BUZZ_E2E_SIGNED_EVENTS__?.at(-1)?.content,
+      ),
+    )
+    .toBe("before\n\n- item");
+});
 
 test("block formatting preserves the lines around a selected composer line", async ({
   page,

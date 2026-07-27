@@ -269,7 +269,13 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
   }, [formattingChain]);
 
   const toggleBlockquote = React.useCallback(() => {
-    formattingChain()?.toggleBlockquote().run();
+    formattingChain()
+      ?.command(({ tr }) => {
+        isolateSelectionForBlockFormatting(tr);
+        return true;
+      })
+      .toggleBlockquote()
+      .run();
   }, [formattingChain]);
 
   const toggleSpoiler = React.useCallback(() => {
