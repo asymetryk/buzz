@@ -8,12 +8,22 @@ import XCTest
 
 class RunnerTests: XCTestCase {
 
+  @MainActor
   func testPocketVoiceUsesSpokenPlaybackAudioSession() throws {
     let session = AVAudioSession.sharedInstance()
     try VoiceAudioOutput.configureAudioSession(session)
     XCTAssertEqual(session.category, .playback)
     XCTAssertEqual(session.mode, .spokenAudio)
     XCTAssertTrue(session.categoryOptions.contains(.duckOthers))
+  }
+
+  @MainActor
+  func testSystemVoiceUsesAccessibilitySettingsWithoutSelectingAVoice() {
+    let utterance = VoiceAudioOutput.systemUtterance("Accessibility voice")
+
+    XCTAssertTrue(utterance.prefersAssistiveTechnologySettings)
+    XCTAssertNil(utterance.voice)
+    XCTAssertEqual(utterance.rate, AVSpeechUtteranceDefaultSpeechRate)
   }
 
   func testPocketVoiceProducesValidPcmWhenModelIsAvailable() throws {

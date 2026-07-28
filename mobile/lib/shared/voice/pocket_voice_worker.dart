@@ -41,8 +41,14 @@ class PocketWorkerFailure extends PocketWorkerResponse {
   final int? generation;
   final PocketWorkerFailureKind kind;
   final String message;
+  final String? remainingText;
 
-  const PocketWorkerFailure(this.kind, this.message, {this.generation});
+  const PocketWorkerFailure(
+    this.kind,
+    this.message, {
+    this.generation,
+    this.remainingText,
+  });
 }
 
 class PocketWorkerStopped extends PocketWorkerResponse {
@@ -66,7 +72,7 @@ class _Dispose extends _PocketWorkerCommand {
 
 class PocketVoiceWorker {
   final StreamController<PocketWorkerResponse> _responses =
-      StreamController.broadcast();
+      StreamController.broadcast(sync: true);
   Isolate? _isolate;
   SendPort? _commands;
   int? _handle;
@@ -106,9 +112,12 @@ class PocketVoiceWorker {
     messages.listen((message) {
       if (message is! PocketWorkerResponse) return;
       if (_finishesActiveSynthesis(message)) {
-        _activeSynthesis?.complete();
+        final active = _activeSynthesis;
         _activeSynthesis = null;
         _activeGeneration = null;
+        _responses.add(message);
+        active?.complete();
+        return;
       }
       _responses.add(message);
     });
@@ -197,13 +206,15 @@ void _workerMain((SendPort, String) startup) {
   commands.listen((command) {
     switch (command) {
       case _Synthesize():
+        var chunks = <String>[];
+        var index = 0;
         try {
-          final chunks = ffi.prepareChunks(handle, command.text);
+          chunks = ffi.prepareChunks(handle, command.text);
           if (chunks.isEmpty) {
             output.send(PocketWorkerDone(command.generation));
             return;
           }
-          for (var index = 0; index < chunks.length; index += 1) {
+          for (; index < chunks.length; index += 1) {
             final stopwatch = Stopwatch()..start();
             final pcm = ffi.synthesize(handle, chunks[index]);
             stopwatch.stop();
@@ -226,6 +237,9 @@ void _workerMain((SendPort, String) startup) {
                   : PocketWorkerFailureKind.synthesis,
               message,
               generation: command.generation,
+              remainingText: chunks.isEmpty
+                  ? command.text
+                  : chunks.sublist(index).join(' '),
             ),
           );
         }

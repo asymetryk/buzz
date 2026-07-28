@@ -19,13 +19,14 @@ class PocketVoiceButton extends ConsumerWidget {
 
     return IconButton(
       color: active ? context.colors.primary : null,
-      tooltip: active ? 'Stop Pocket voice' : 'Start Pocket voice',
+      tooltip: active ? 'Stop voice' : 'Start voice',
       onPressed: () async {
         if (active) {
           await ref.read(pocketVoiceProvider.notifier).disable();
           return;
         }
-        if (model.phase != PocketModelPhase.ready) {
+        if (model.phase != PocketModelPhase.ready &&
+            !ref.read(systemVoiceFallbackAvailableProvider)) {
           if (context.mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
