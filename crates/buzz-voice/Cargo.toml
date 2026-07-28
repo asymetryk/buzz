@@ -7,6 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Reusable local voice primitives for Buzz"
 
+[features]
+default = ["static"]
+static = ["sherpa-onnx/static"]
+shared = ["sherpa-onnx/shared"]
+
 [dependencies]
 serde_json = { workspace = true }
-sherpa-onnx = "1.12"
+sherpa-onnx = { version = "1.12", default-features = false }
