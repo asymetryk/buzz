@@ -41,8 +41,14 @@ class PocketWorkerFailure extends PocketWorkerResponse {
   final int? generation;
   final PocketWorkerFailureKind kind;
   final String message;
+  final List<String> remainingTextChunks;
 
-  const PocketWorkerFailure(this.kind, this.message, {this.generation});
+  const PocketWorkerFailure(
+    this.kind,
+    this.message, {
+    this.generation,
+    this.remainingTextChunks = const [],
+  });
 }
 
 class PocketWorkerStopped extends PocketWorkerResponse {
@@ -197,13 +203,26 @@ void _workerMain((SendPort, String) startup) {
   commands.listen((command) {
     switch (command) {
       case _Synthesize():
+        late final List<String> chunks;
         try {
-          final chunks = ffi.prepareChunks(handle, command.text);
-          if (chunks.isEmpty) {
-            output.send(PocketWorkerDone(command.generation));
-            return;
-          }
-          for (var index = 0; index < chunks.length; index += 1) {
+          chunks = ffi.prepareChunks(handle, command.text);
+        } catch (error) {
+          output.send(
+            PocketWorkerFailure(
+              PocketWorkerFailureKind.synthesis,
+              error.toString(),
+              generation: command.generation,
+              remainingTextChunks: [command.text],
+            ),
+          );
+          return;
+        }
+        if (chunks.isEmpty) {
+          output.send(PocketWorkerDone(command.generation));
+          return;
+        }
+        for (var index = 0; index < chunks.length; index += 1) {
+          try {
             final stopwatch = Stopwatch()..start();
             final pcm = ffi.synthesize(handle, chunks[index]);
             stopwatch.stop();
@@ -216,18 +235,22 @@ void _workerMain((SendPort, String) startup) {
                 isLast: index == chunks.length - 1,
               ),
             );
+          } catch (error) {
+            output.send(
+              PocketWorkerFailure(
+                error.toString().contains('synthesis cancelled')
+                    ? PocketWorkerFailureKind.cancelled
+                    : PocketWorkerFailureKind.synthesis,
+                error.toString(),
+                generation: command.generation,
+                remainingTextChunks:
+                    error.toString().contains('synthesis cancelled')
+                    ? const []
+                    : chunks.sublist(index),
+              ),
+            );
+            break;
           }
-        } catch (error) {
-          final message = error.toString();
-          output.send(
-            PocketWorkerFailure(
-              message.contains('synthesis cancelled')
-                  ? PocketWorkerFailureKind.cancelled
-                  : PocketWorkerFailureKind.synthesis,
-              message,
-              generation: command.generation,
-            ),
-          );
         }
       case _Dispose():
         ffi.destroy(handle);

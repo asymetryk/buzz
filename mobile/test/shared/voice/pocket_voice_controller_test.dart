@@ -175,39 +175,238 @@ void main() {
     expect(worker.syntheses, [(1, 'Response.')]);
     expect(container.read(pocketVoiceProvider), same(state));
   });
-
-  test('classifies synthesis failures for platform fallback routing', () async {
+  test('uses Android system speech when the Pocket model is absent', () async {
     final worker = _FakeWorker();
+    final output = _FakeAudioOutput();
+    final container = _container(worker, output, modelReady: false);
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+
+    await notifier.enable('conversation');
+    notifier.speak('conversation', 'Fallback response.');
+    await _flush();
+
+    expect(worker.startCount, 0);
+    expect(output.systemSpoken, [(('Fallback response.'), 1)]);
+    final state = container.read(pocketVoiceProvider);
+    expect(state.phase, PocketVoicePhase.synthesizing);
+    expect(state.backend, PocketVoiceBackend.androidSystem);
+    expect(state.fallbackReason, PocketVoiceFallbackReason.modelUnavailable);
+    expect(state.error, isNull);
+    output.started();
+    await _flush();
+    expect(
+      container.read(pocketVoiceProvider).phase,
+      PocketVoicePhase.speaking,
+    );
+  });
+
+  test('falls back without error chatter when Pocket loading fails', () async {
+    final worker = _FakeWorker()..startError = StateError('load failed');
     final output = _FakeAudioOutput();
     final container = _container(worker, output);
     addTearDown(container.dispose);
     final notifier = container.read(pocketVoiceProvider.notifier);
 
     await notifier.enable('conversation');
-    notifier.speak('conversation', 'Response.');
-    worker.emitFailure(
-      1,
-      PocketWorkerFailureKind.synthesis,
-      'Pocket synthesis failed.',
-    );
+    notifier.speak('conversation', 'Fallback response.');
     await _flush();
 
+    expect(worker.disposeCount, 1);
+    expect(output.systemSpoken.single.$1, 'Fallback response.');
     final state = container.read(pocketVoiceProvider);
-    expect(state.phase, PocketVoicePhase.error);
-    expect(state.failureKind, PocketVoiceFailureKind.synthesis);
-    expect(state.error, 'Pocket synthesis failed.');
+    expect(state.backend, PocketVoiceBackend.androidSystem);
+    expect(state.fallbackReason, PocketVoiceFallbackReason.pocketLoadFailed);
+    expect(state.error, isNull);
   });
-}
 
-ProviderContainer _container(_FakeWorker worker, _FakeAudioOutput output) =>
-    ProviderContainer(
+  test(
+    'reports an error only when Pocket and system speech are unavailable',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput()..systemAvailable = false;
+      final container = _container(worker, output, modelReady: false);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await expectLater(
+        notifier.enable('conversation'),
+        throwsA(isA<StateError>()),
+      );
+    },
+  );
+
+  test(
+    'hands unspoken Pocket chunks to system speech without repeating audio',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'First complete response.');
+      notifier.speak('conversation', 'Second response with two chunks.');
+      notifier.speak('conversation', 'Third queued response.');
+
+      worker.emitAudio(1, [1, 2], isLast: true);
+      await _flush();
+      output.complete();
+      await _flush();
+      expect(worker.syntheses.last, (2, 'Second response with two chunks.'));
+
+      worker.emitAudio(2, [3, 4], isLast: false);
+      worker.emitFailure(
+        2,
+        remainingTextChunks: const ['unspoken second chunk'],
+      );
+      await _flush();
+      expect(output.systemSpoken, isEmpty);
+
+      output.complete();
+      await _flush();
+      expect(output.systemSpoken.single.$1, 'unspoken second chunk');
+      expect(
+        output.systemSpoken.map((speech) => speech.$1),
+        isNot(contains('Second response with two chunks.')),
+      );
+
+      output.complete();
+      await _flush();
+      expect(output.systemSpoken.last.$1, 'Third queued response.');
+    },
+  );
+
+  test(
+    'disable cancels system speech and ignores its late completion',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output, modelReady: false);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'System response.');
+      await _flush();
+      await notifier.disable();
+      output.complete();
+      await _flush();
+
+      expect(container.read(pocketVoiceProvider).phase, PocketVoicePhase.off);
+      expect(output.stopCount, greaterThan(0));
+      expect(output.shutdownCount, 1);
+    },
+  );
+
+  test(
+    'audio focus loss interrupts system speech without replaying it',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output, modelReady: false);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'Interrupted system response.');
+      await _flush();
+      output.interrupt();
+      await _flush();
+
+      expect(output.systemSpoken, [(('Interrupted system response.'), 1)]);
+      expect(
+        container.read(pocketVoiceProvider).phase,
+        PocketVoicePhase.listening,
+      );
+    },
+  );
+
+  test('recovers from system speech to Pocket at a safe boundary', () async {
+    final worker = _FakeWorker();
+    final output = _FakeAudioOutput();
+    final container = _container(
+      worker,
+      output,
+      modelFactory: _MutablePocketModelNotifier.new,
+    );
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+    final model =
+        container.read(pocketModelProvider.notifier)
+            as _MutablePocketModelNotifier;
+
+    await notifier.enable('conversation');
+    notifier.speak('conversation', 'System response.');
+    await _flush();
+    model.makeReady();
+    output.complete();
+    await _flush();
+
+    notifier.speak('conversation', 'Pocket response.');
+    await _flush();
+    expect(worker.startCount, 1);
+    expect(worker.syntheses, [(2, 'Pocket response.')]);
+    expect(
+      container.read(pocketVoiceProvider).backend,
+      PocketVoiceBackend.pocket,
+    );
+  });
+
+  test('resource pressure parks Pocket until the next foreground', () async {
+    final firstWorker = _FakeWorker();
+    final recoveredWorker = _FakeWorker();
+    var factoryCalls = 0;
+    final output = _FakeAudioOutput();
+    final container = ProviderContainer(
       overrides: [
         relayConfigProvider.overrideWith(_TestRelayConfigNotifier.new),
         pocketModelProvider.overrideWith(_ReadyPocketModelNotifier.new),
-        pocketVoiceWorkerFactoryProvider.overrideWithValue(() => worker),
+        pocketVoiceWorkerFactoryProvider.overrideWithValue(() {
+          factoryCalls += 1;
+          return factoryCalls == 1 ? firstWorker : recoveredWorker;
+        }),
         voiceAudioOutputProvider.overrideWithValue(output),
       ],
     );
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+
+    await notifier.enable('conversation');
+    output.resourcePressure();
+    await _flush();
+    notifier.speak('conversation', 'Under pressure.');
+    await _flush();
+    expect(output.systemSpoken.single.$1, 'Under pressure.');
+
+    output.complete();
+    output.foreground();
+    await _flush();
+    notifier.speak('conversation', 'Recovered.');
+    await _flush();
+    expect(recoveredWorker.syntheses.single.$2, 'Recovered.');
+  });
+}
+
+ProviderContainer _container(
+  _FakeWorker worker,
+  _FakeAudioOutput output, {
+  bool modelReady = true,
+  PocketModelNotifier Function()? modelFactory,
+}) => ProviderContainer(
+  overrides: [
+    relayConfigProvider.overrideWith(_TestRelayConfigNotifier.new),
+    pocketModelProvider.overrideWith(
+      modelFactory ??
+          (modelReady
+              ? _ReadyPocketModelNotifier.new
+              : _AbsentPocketModelNotifier.new),
+    ),
+    pocketVoiceWorkerFactoryProvider.overrideWithValue(() => worker),
+    voiceAudioOutputProvider.overrideWithValue(output),
+  ],
+);
 
 Future<void> _flush() => Future<void>.delayed(Duration.zero);
 
@@ -217,6 +416,25 @@ class _ReadyPocketModelNotifier extends PocketModelNotifier {
     phase: PocketModelPhase.ready,
     path: '/tmp/pocket-model',
   );
+}
+
+class _AbsentPocketModelNotifier extends PocketModelNotifier {
+  @override
+  PocketModelState build() =>
+      const PocketModelState(phase: PocketModelPhase.absent);
+}
+
+class _MutablePocketModelNotifier extends PocketModelNotifier {
+  @override
+  PocketModelState build() =>
+      const PocketModelState(phase: PocketModelPhase.absent);
+
+  void makeReady() {
+    state = const PocketModelState(
+      phase: PocketModelPhase.ready,
+      path: '/tmp/pocket-model',
+    );
+  }
 }
 
 class _TestRelayConfigNotifier extends RelayConfigNotifier {
@@ -234,6 +452,7 @@ class _FakeWorker extends PocketVoiceWorker {
   int startCount = 0;
   int disposeCount = 0;
   int cancelCount = 0;
+  Object? startError;
 
   _FakeWorker({bool startPaused = false})
     : _startGate = startPaused ? Completer<void>() : null;
@@ -248,6 +467,8 @@ class _FakeWorker extends PocketVoiceWorker {
   Future<void> start(String modelPath) async {
     startCount += 1;
     await _startGate?.future;
+    final error = startError;
+    if (error != null) throw error;
     _ready = true;
   }
 
@@ -271,11 +492,17 @@ class _FakeWorker extends PocketVoiceWorker {
   }
 
   void emitFailure(
-    int generation,
-    PocketWorkerFailureKind kind,
-    String message,
-  ) {
-    _controller.add(PocketWorkerFailure(kind, message, generation: generation));
+    int generation, {
+    List<String> remainingTextChunks = const [],
+  }) {
+    _controller.add(
+      PocketWorkerFailure(
+        PocketWorkerFailureKind.synthesis,
+        'Pocket synthesis failed.',
+        generation: generation,
+        remainingTextChunks: remainingTextChunks,
+      ),
+    );
   }
 
   @override
@@ -303,22 +530,82 @@ class _FakeWorker extends PocketVoiceWorker {
 class _FakeAudioOutput implements VoiceAudioOutput {
   final StreamController<VoiceAudioEvent> _controller =
       StreamController.broadcast();
-  final List<(List<int>, int)> played = [];
+  final List<(List<int>, int, int)> played = [];
+  final List<(String, int)> systemSpoken = [];
+  bool systemAvailable = true;
+  int stopCount = 0;
+  int shutdownCount = 0;
+  VoiceAudioBackend? _activeBackend;
+  int? _activeGeneration;
 
   @override
   Stream<VoiceAudioEvent> get events => _controller.stream;
 
   @override
-  Future<void> play(Uint8List pcm, int sampleRate) async {
-    played.add((pcm.toList(), sampleRate));
-  }
-
-  void complete() => _controller.add(VoiceAudioEvent.completed);
-
-  void started() => _controller.add(VoiceAudioEvent.started);
-
-  void fail() => _controller.add(VoiceAudioEvent.error);
+  Future<bool> systemTtsAvailable() async => systemAvailable;
 
   @override
-  Future<void> stop() async {}
+  Future<void> play(Uint8List pcm, int sampleRate, int generation) async {
+    played.add((pcm.toList(), sampleRate, generation));
+    _activeBackend = VoiceAudioBackend.pocket;
+    _activeGeneration = generation;
+  }
+
+  @override
+  Future<void> speakSystem(String text, int generation) async {
+    systemSpoken.add((text, generation));
+    _activeBackend = VoiceAudioBackend.androidSystem;
+    _activeGeneration = generation;
+  }
+
+  void complete() => _controller.add(
+    VoiceAudioEvent(
+      VoiceAudioEventType.completed,
+      backend: _activeBackend,
+      generation: _activeGeneration,
+    ),
+  );
+
+  void started() => _controller.add(
+    VoiceAudioEvent(
+      VoiceAudioEventType.started,
+      backend: _activeBackend,
+      generation: _activeGeneration,
+    ),
+  );
+
+  void fail() => _controller.add(
+    VoiceAudioEvent(
+      VoiceAudioEventType.error,
+      backend: _activeBackend,
+      generation: _activeGeneration,
+    ),
+  );
+
+  void interrupt() => _controller.add(
+    VoiceAudioEvent(
+      VoiceAudioEventType.interrupted,
+      backend: _activeBackend,
+      generation: _activeGeneration,
+    ),
+  );
+
+  void foreground() =>
+      _controller.add(const VoiceAudioEvent(VoiceAudioEventType.foregrounded));
+
+  void resourcePressure() => _controller.add(
+    const VoiceAudioEvent(VoiceAudioEventType.resourcePressure),
+  );
+
+  @override
+  Future<void> stop() async {
+    stopCount += 1;
+    _activeBackend = null;
+    _activeGeneration = null;
+  }
+
+  @override
+  Future<void> shutdownSystemTts() async {
+    shutdownCount += 1;
+  }
 }

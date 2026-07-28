@@ -113,6 +113,18 @@ class MainActivity : FlutterActivity() {
         super.onStop()
     }
 
+    override fun onStart() {
+        super.onStart()
+        voiceAudioOutput?.foreground()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (shouldDisablePocketForTrimMemory(level)) {
+            voiceAudioOutput?.resourcePressure()
+        }
+    }
+
     override fun onDestroy() {
         voiceAudioOutput?.dispose()
         voiceAudioOutput = null
@@ -302,3 +314,16 @@ class MainActivity : FlutterActivity() {
         private const val TRANSCODE_VIDEO_TO_MP4_METHOD = "transcodeVideoToMp4"
     }
 }
+
+internal fun shouldDisablePocketForTrimMemory(level: Int): Boolean =
+    level == TRIM_MEMORY_RUNNING_LOW_LEVEL ||
+        level == TRIM_MEMORY_RUNNING_CRITICAL_LEVEL ||
+        level == TRIM_MEMORY_MODERATE_LEVEL ||
+        level == TRIM_MEMORY_COMPLETE_LEVEL
+
+internal const val TRIM_MEMORY_RUNNING_LOW_LEVEL = 10
+internal const val TRIM_MEMORY_RUNNING_CRITICAL_LEVEL = 15
+internal const val TRIM_MEMORY_UI_HIDDEN_LEVEL = 20
+internal const val TRIM_MEMORY_BACKGROUND_LEVEL = 40
+internal const val TRIM_MEMORY_MODERATE_LEVEL = 60
+internal const val TRIM_MEMORY_COMPLETE_LEVEL = 80

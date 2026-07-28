@@ -61,13 +61,19 @@ void main() {
           audioSeconds;
       final output = PlatformVoiceAudioOutput();
       final playbackStarted = output.events.firstWhere(
-        (event) => event == VoiceAudioEvent.started,
+        (event) =>
+            event.type == VoiceAudioEventType.started &&
+            event.backend == VoiceAudioBackend.pocket &&
+            event.generation == 1,
       );
       final playbackCompleted = output.events.firstWhere(
-        (event) => event == VoiceAudioEvent.completed,
+        (event) =>
+            event.type == VoiceAudioEventType.completed &&
+            event.backend == VoiceAudioBackend.pocket &&
+            event.generation == 1,
       );
       final playbackClock = Stopwatch()..start();
-      await output.play(bytes, first.sampleRate);
+      await output.play(bytes, first.sampleRate, 1);
       await playbackStarted.timeout(const Duration(seconds: 30));
       firstPlaybackClock.stop();
       await playbackCompleted.timeout(const Duration(seconds: 30));
@@ -143,6 +149,52 @@ void main() {
       );
     },
     timeout: const Timeout(Duration(minutes: 20)),
+  );
+
+  testWidgets(
+    'Android installed default TTS speaks and cancels through the voice boundary',
+    (tester) async {
+      if (!Platform.isAndroid) return;
+      final output = PlatformVoiceAudioOutput();
+      expect(await output.systemTtsAvailable(), isTrue);
+
+      final completed = output.events.firstWhere(
+        (event) =>
+            event.type == VoiceAudioEventType.completed &&
+            event.backend == VoiceAudioBackend.androidSystem &&
+            event.generation == 41,
+      );
+      await output.speakSystem(
+        'Buzz Android system speech fallback is ready.',
+        41,
+      );
+      await completed.timeout(const Duration(seconds: 30));
+
+      var cancelledCompleted = false;
+      final subscription = output.events.listen((event) {
+        if (event.type == VoiceAudioEventType.completed &&
+            event.backend == VoiceAudioBackend.androidSystem &&
+            event.generation == 42) {
+          cancelledCompleted = true;
+        }
+      });
+      await output.speakSystem(
+        List.filled(12, 'This sentence should be cancelled.').join(' '),
+        42,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await output.stop();
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await subscription.cancel();
+      await output.shutdownSystemTts();
+
+      expect(cancelledCompleted, isFalse);
+      debugPrint(
+        'BUZZ_ANDROID_SYSTEM_TTS default_engine=true '
+        'completed_generation=41 cancelled_generation=42',
+      );
+    },
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 }
 
