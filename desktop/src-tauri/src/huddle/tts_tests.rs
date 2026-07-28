@@ -950,8 +950,8 @@ fn chunk_grouping_packs_up_to_budget_then_spills() {
 }
 
 /// A single sentence longer than the budget is passed through unsplit —
-/// long single sentences are fine (the LM cap bounds runaway); only seams
-/// are being minimized.
+/// exact token splitting happens afterward through the loaded Pocket engine
+/// so every result remains a normal playback/cancellation unit.
 #[test]
 fn chunk_grouping_oversized_sentence_passes_through() {
     let long = "word ".repeat(60).trim_end().to_string() + ".";

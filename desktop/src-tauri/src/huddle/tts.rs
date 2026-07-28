@@ -74,8 +74,7 @@ const SYNTH_STEPS: usize = 1;
 /// Applied only at the *end* of each synthesised sentence to eliminate the
 /// click that would otherwise occur when a non-zero waveform terminates
 /// abruptly. **No fade-in is applied** — see `apply_fade_out` for the
-/// rationale and `examples/pocket_onset_probe.rs` for the measurement that
-/// motivated removing the leading fade.
+/// rationale and measurements that motivated removing the leading fade.
 const FADE_OUT_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
 
 /// Length of the zero-sample cushion prepended before each synthesized
@@ -102,12 +101,9 @@ const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 /// sentence-per-call path created ~2–4× more seams than upstream.
 ///
 /// Chunk grouping happens at the pipeline boundary, before the April engine's
-/// SentencePiece tokenizer runs, so 50 tokens remains approximated with a
-/// character budget. The bundled 4k-entry vocab averages ~4 chars per token,
-/// but usage-weighted English text leans on short common tokens, so the
-/// effective ratio is ~2–4 chars/token and 200 chars ≈ 60–100 tokens —
-/// modestly above upstream's 50, deliberately: erring large means fewer
-/// seams. Do not shrink this budget to chase an exact 50-token match.
+/// SentencePiece tokenizer runs, so this character budget performs only the
+/// coarse sentence packing. The loaded engine then refines every result at
+/// the bundle's exact 50-token boundary before the worker synthesis loop.
 const MAX_CHUNK_CHARS: usize = 200;
 
 /// Silence inserted between sentences by the TTS pipeline (seconds).
@@ -502,7 +498,22 @@ fn tts_worker(
             .into_iter()
             .filter(|s| !s.trim().is_empty())
             .collect();
-        let chunks = group_sentences_into_chunks(&sentences, MAX_CHUNK_CHARS);
+        let grouped_chunks = group_sentences_into_chunks(&sentences, MAX_CHUNK_CHARS);
+        let mut chunks = Vec::new();
+        let mut split_failed = false;
+        for chunk in grouped_chunks {
+            match engine.split_text_into_chunks(&chunk) {
+                Ok(model_chunks) => chunks.extend(model_chunks),
+                Err(e) => {
+                    eprintln!("buzz-desktop: TTS chunking failed: {e}");
+                    split_failed = true;
+                    break;
+                }
+            }
+        }
+        if split_failed {
+            continue;
+        }
 
         for chunk in &chunks {
             if handle_cancel_or_shutdown(
@@ -647,8 +658,8 @@ fn lock_player_ops(ops: &Mutex<()>) -> MutexGuard<'_, ()> {
 /// Hard-clamp samples to ±1.0 full scale.
 ///
 /// No gain is applied: Pocket TTS already emits speech-level audio
-/// (peaks 0.4–0.97, RMS ≈ −20 dBFS across varied sentences — measured by
-/// `examples/pocket_clip_probe`), matching the kyutai reference pipeline,
+/// (peaks 0.4–0.97, RMS ≈ −20 dBFS across varied sentences), matching the
+/// kyutai reference pipeline,
 /// which applies no output scaling. Two earlier gain stages were both
 /// regressions against that baseline: per-sentence peak normalization caused
 /// level pumping between sentences, and the fixed 9.3× gain that replaced it
@@ -670,8 +681,8 @@ fn clamp_to_full_scale(samples: Vec<f32>) -> Vec<f32> {
 /// An earlier revision (pre 2026-05) symmetrically faded *in* over the same
 /// 8 ms window. That swallowed the leading consonant attack on every
 /// sentence — Pocket TTS produces real audio energy inside the first
-/// millisecond (RMS ≈ 0.02, peak ≈ 0.03 measured across four prompts in
-/// `examples/pocket_onset_probe.rs`), and a linear 0→1 ramp over 192 samples
+/// millisecond (RMS ≈ 0.02, peak ≈ 0.03 across four measured prompts), and a
+/// linear 0→1 ramp over 192 samples
 /// scales those onset samples by ≤50 % for the first ~4 ms. The result was
 /// the "first little sound or two is missing" regression heard on
 /// 2026-05-18.
@@ -733,9 +744,9 @@ fn build_sentence_append_buffer(
 /// single-sentence cost. Subsequent sentences pack greedily: a sentence
 /// joins the current chunk while the combined length stays within
 /// `max_chars`; otherwise it starts a new chunk. A single sentence longer
-/// than `max_chars` becomes its own chunk unsplit — Pocket TTS handles long
-/// single sentences with its token-count-derived generation limit; it's the
-/// *seams* we're minimizing.
+/// than `max_chars` becomes its own chunk here, then the Pocket engine splits
+/// it at the April bundle's exact token limit before synthesis. Keeping that
+/// second split in the worker preserves per-chunk fades and cancel checks.
 ///
 /// Sentences within a chunk are joined with a single space; sentence-ending
 /// punctuation is preserved by `split_sentences`, so the model sees natural

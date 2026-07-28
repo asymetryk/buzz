@@ -38,7 +38,6 @@ const DECODER_CHUNK_FRAMES: usize = 12;
 const ONNX_THREADS: usize = 4;
 const TOKENS_PER_SECOND_ESTIMATE: f32 = 3.0;
 const GENERATION_SECONDS_PADDING: f32 = 2.0;
-const MAX_GENERATION_FRAMES: usize = 500;
 
 #[derive(Debug, Deserialize)]
 struct Bundle {
@@ -53,6 +52,7 @@ struct Bundle {
     pad_with_spaces_for_short_inputs: bool,
     remove_semicolons: bool,
     model_recommended_frames_after_eos: Option<usize>,
+    max_token_per_chunk: usize,
     tokenizer_file: String,
     bos_before_voice_file: String,
     flow_lm_state_manifest: Vec<StateSpec>,
@@ -154,6 +154,7 @@ impl AprilPocketTts {
         if bundle.pad_with_spaces_for_short_inputs
             || bundle.remove_semicolons
             || bundle.model_recommended_frames_after_eos.is_some()
+            || bundle.max_token_per_chunk != 50
         {
             return Err("unsupported April Pocket TTS prompt-policy metadata".to_string());
         }
@@ -184,6 +185,65 @@ impl AprilPocketTts {
         })
     }
 
+    pub(crate) fn split_prompt(&self, prepared: &PreparedPrompt) -> Result<Vec<String>, String> {
+        if self.token_count(&prepared.text)? <= self.bundle.max_token_per_chunk {
+            return Ok(vec![prepared.text.clone()]);
+        }
+
+        let mut chunks = Vec::new();
+        let mut current = String::new();
+        for word in prepared.text.split_whitespace() {
+            let candidate = if current.is_empty() {
+                word.to_string()
+            } else {
+                format!("{current} {word}")
+            };
+            if self.prepared_token_count(&candidate)? <= self.bundle.max_token_per_chunk {
+                current = candidate;
+                continue;
+            }
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+            }
+
+            if self.prepared_token_count(word)? <= self.bundle.max_token_per_chunk {
+                current = word.to_string();
+                continue;
+            }
+
+            let mut fragment = String::new();
+            for ch in word.chars() {
+                let candidate = format!("{fragment}{ch}");
+                if !fragment.is_empty()
+                    && self.prepared_token_count(&candidate)? > self.bundle.max_token_per_chunk
+                {
+                    chunks.push(std::mem::take(&mut fragment));
+                }
+                fragment.push(ch);
+            }
+            current = fragment;
+        }
+        if !current.is_empty() {
+            chunks.push(current);
+        }
+
+        chunks
+            .into_iter()
+            .map(|text| {
+                let chunk = super::prepare_pocket_prompt(&text)
+                    .ok_or_else(|| "Pocket TTS prompt chunk became empty".to_string())?;
+                let token_count = self.token_count(&chunk.text)?;
+                if token_count > self.bundle.max_token_per_chunk {
+                    return Err(format!(
+                        "Pocket TTS prompt chunk has {token_count} tokens; maximum is {}",
+                        self.bundle.max_token_per_chunk
+                    ));
+                }
+                Ok(chunk.text)
+            })
+            .collect()
+    }
+
     pub(crate) fn synth_chunk(
         &mut self,
         prepared: &PreparedPrompt,
@@ -203,6 +263,13 @@ impl AprilPocketTts {
         if token_ids.is_empty() {
             return Ok(Vec::new());
         }
+        if token_ids.len() > self.bundle.max_token_per_chunk {
+            return Err(format!(
+                "Pocket TTS prompt has {} tokens; split_text_into_chunks maximum is {}",
+                token_ids.len(),
+                self.bundle.max_token_per_chunk
+            ));
+        }
 
         let token_count = token_ids.len();
         let text_embeddings = self.text_embeddings(token_ids)?;
@@ -211,6 +278,21 @@ impl AprilPocketTts {
         let latents =
             self.generate_latents(max_frames, prepared.frames_after_eos, &mut flow_state)?;
         self.decode_latents(&latents)
+    }
+
+    fn prepared_token_count(&self, text: &str) -> Result<usize, String> {
+        let prepared = super::prepare_pocket_prompt(text)
+            .ok_or_else(|| "Pocket TTS prompt chunk became empty".to_string())?;
+        self.token_count(&prepared.text)
+    }
+
+    fn token_count(&self, text: &str) -> Result<usize, String> {
+        Ok(self
+            .tokenizer
+            .encode(text, false)
+            .map_err(|err| format!("tokenize Pocket TTS prompt: {err}"))?
+            .get_ids()
+            .len())
     }
 
     fn voice_embeddings(&mut self, style: &VoiceStyle) -> Result<Vec<f32>, String> {
@@ -249,7 +331,7 @@ impl AprilPocketTts {
         let (_, encoded) = outputs[0]
             .try_extract_tensor::<f32>()
             .map_err(ort_error("extract Mimi encoder output"))?;
-        if encoded.len() % self.bundle.conditioning_dim != 0 {
+        if !encoded.len().is_multiple_of(self.bundle.conditioning_dim) {
             return Err(format!(
                 "Mimi encoder returned {} values, not divisible by {}",
                 encoded.len(),
@@ -319,7 +401,10 @@ impl AprilPocketTts {
         text_embeddings: &[f32],
         state: &mut [StateValue],
     ) -> Result<(), String> {
-        if text_embeddings.len() % self.bundle.conditioning_dim != 0 {
+        if !text_embeddings
+            .len()
+            .is_multiple_of(self.bundle.conditioning_dim)
+        {
             return Err(format!(
                 "text conditioner returned {} values, not divisible by {}",
                 text_embeddings.len(),
@@ -456,7 +541,7 @@ impl AprilPocketTts {
         if latents.is_empty() {
             return Ok(Vec::new());
         }
-        if latents.len() % self.bundle.latent_dim != 0 {
+        if !latents.len().is_multiple_of(self.bundle.latent_dim) {
             return Err(format!(
                 "latent buffer has {} values, not divisible by {}",
                 latents.len(),
@@ -632,9 +717,8 @@ fn shape_len(shape: &[i64]) -> Result<usize, String> {
 }
 
 fn estimate_max_frames(token_count: usize, frame_rate: f32) -> usize {
-    (((token_count as f32 / TOKENS_PER_SECOND_ESTIMATE + GENERATION_SECONDS_PADDING) * frame_rate)
-        .ceil() as usize)
-        .min(MAX_GENERATION_FRAMES)
+    ((token_count as f32 / TOKENS_PER_SECOND_ESTIMATE + GENERATION_SECONDS_PADDING) * frame_rate)
+        .ceil() as usize
 }
 
 fn normal_noise(rng: &mut impl Rng, len: usize, std_dev: f32) -> Vec<f32> {
@@ -725,9 +809,9 @@ mod tests {
     }
 
     #[test]
-    fn generation_frame_estimate_is_capped() {
+    fn generation_frame_estimate_scales_with_token_count() {
         assert_eq!(estimate_max_frames(3, 12.5), 38);
-        assert_eq!(estimate_max_frames(300, 12.5), MAX_GENERATION_FRAMES);
+        assert_eq!(estimate_max_frames(300, 12.5), 1_275);
     }
 
     #[test]
@@ -752,5 +836,21 @@ mod tests {
             let encoding = tokenizer.encode(*text, false).expect("tokenize");
             assert_eq!(encoding.get_ids(), *expected, "{text}");
         }
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR"]
+    fn loader_splits_oversized_prompts_at_bundle_token_limit() {
+        let dir = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to the verified April bundle");
+        let engine = AprilPocketTts::load(Path::new(&dir)).expect("load April bundle");
+        let text = "This deliberately long sentence repeats ordinary English words so the exact SentencePiece token limit is exercised without relying on punctuation, and it keeps adding more material until the prompt must be divided into multiple independently safe generation chunks before the recurrent state cache can be exhausted.";
+        let prepared = crate::pocket::prepare_pocket_prompt(text).expect("prepare prompt");
+        let chunks = engine.split_prompt(&prepared).expect("split prompt");
+
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| {
+            engine.token_count(chunk).expect("tokenize chunk") <= engine.bundle.max_token_per_chunk
+        }));
     }
 }

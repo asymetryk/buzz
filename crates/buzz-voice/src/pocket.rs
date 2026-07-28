@@ -191,6 +191,21 @@ pub(crate) fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
 }
 
 impl PocketTts {
+    /// Split text at word boundaries using the April bundle's exact tokenizer
+    /// limit. Callers should treat every returned item as an independent
+    /// playback chunk so cancellation and boundary processing remain visible.
+    pub fn split_text_into_chunks(&self, text: &str) -> Result<Vec<String>, String> {
+        let prepared = match prepare_pocket_prompt(text) {
+            Some(p) => p,
+            None => return Ok(Vec::new()),
+        };
+
+        self.inner
+            .lock()
+            .map_err(|_| "Pocket TTS engine lock poisoned".to_string())?
+            .split_prompt(&prepared)
+    }
+
     /// Synthesise `text` with the given reference voice.
     ///
     /// `_lang` and `_steps` are accepted for API compatibility with the
