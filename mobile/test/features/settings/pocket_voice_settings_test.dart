@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:buzz/features/settings/settings_page.dart';
 import 'package:buzz/shared/theme/theme.dart';
 import 'package:buzz/shared/voice/pocket_model_provider.dart';
@@ -53,10 +55,16 @@ void main() {
     expect(find.textContaining('Downloads 473 MB'), findsOneWidget);
     expect(find.text('473 MB'), findsOneWidget);
 
-    await expectLater(
-      find.byKey(screenshotKey),
-      matchesGoldenFile('goldens/pocket_voice_settings.png'),
-    );
+    // Flutter's text rasterization differs between macOS and the Linux CI
+    // runner even with the same bundled fonts. Keep the pixel baseline on the
+    // platform that produces the reviewer screenshot; the assertions above
+    // remain the cross-platform contract for the download state.
+    if (Platform.isMacOS) {
+      await expectLater(
+        find.byKey(screenshotKey),
+        matchesGoldenFile('goldens/pocket_voice_settings.png'),
+      );
+    }
   });
 }
 
