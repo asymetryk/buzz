@@ -40,6 +40,13 @@ keyring = { version = "3.6.3", default-features = false, features = ["sync-secre
 # connection is dropped, which the plugin does immediately. Default features
 # keep the pure-Rust zbus backend, matching the plugin (no libdbus needed).
 notify-rust = "4"
+# The renderer recovery ladder's crash edge. `WebView::connect_web_process_terminated`
+# is gated on `v2_20`; wry already enables `v2_40` on the same crate version, so
+# this adds no native dependency beyond the webkit2gtk wry links against.
+webkit2gtk = { version = "2.0.2", features = ["v2_40"] }
+# Session-bus observation of the single-instance well-known name, at the version
+# tauri-plugin-single-instance already resolves, so both share one zbus stack.
+zbus = "5.17"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSHapticFeedback"] }

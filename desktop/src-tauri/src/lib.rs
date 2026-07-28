@@ -24,6 +24,8 @@ mod prevent_sleep;
 mod ptt_shortcut;
 mod relay;
 mod relay_admission;
+#[cfg(target_os = "linux")]
+mod render_recovery;
 mod reset;
 mod secret_store;
 mod shutdown;
@@ -135,6 +137,24 @@ async fn wait_for_stable_initial_window_geometry<R: tauri::Runtime>(window: &tau
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+
+    // Linux renderer recovery runs before anything else: it may hand this
+    // launch off to a child carrying a different WebKit environment, which is
+    // only safe while the process is still single threaded and owns no
+    // single-instance name.
+    #[cfg(target_os = "linux")]
+    let render_recovery_session = match render_recovery::boot(
+        &context.config().identifier,
+        &context.package_info().version.to_string(),
+    ) {
+        render_recovery::Boot::Run(session) => Some(session),
+        // Recovery is off for this launch; the app still starts normally.
+        render_recovery::Boot::Off(_) => None,
+        // A child is Buzz now, or --reset-rendering-mode did its work.
+        render_recovery::Boot::HandedOff | render_recovery::Boot::Reset => return,
+    };
+
     // mesh-llm's async chains (model download, node start/join) overflow
     // tokio's default 2 MiB worker stacks — a stack-guard SIGABRT, not a
     // panic. Upstream mesh-llm and mesh-console both run on 8 MiB worker
@@ -341,6 +361,14 @@ pub fn run() {
 
     #[cfg(not(buzz_updater_enabled))]
     let builder = builder;
+
+    // Registered after the single-instance plugin so the well-known name is
+    // already held when the ladder writes its `owned` receipt.
+    #[cfg(target_os = "linux")]
+    let builder = match render_recovery_session {
+        Some(session) => builder.plugin(render_recovery::plugin(session)),
+        None => builder,
+    };
 
     let app = builder
         .register_asynchronous_uri_scheme_protocol("buzz-media", |ctx, request, responder| {
@@ -915,7 +943,7 @@ pub fn run() {
             is_auto_update_supported,
             set_window_vibrancy,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     let shutdown_done = Arc::new(AtomicBool::new(false));

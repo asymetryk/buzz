@@ -1085,8 +1085,10 @@ dependencies = [
  "url",
  "user-idle",
  "uuid",
+ "webkit2gtk",
  "window-vibrancy",
  "windows-sys 0.61.2",
+ "zbus 5.17.0",
  "zeroize",
  "zip 8.6.0",
 ]
