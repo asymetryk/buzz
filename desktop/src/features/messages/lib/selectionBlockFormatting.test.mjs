@@ -8,6 +8,7 @@ import { EditorState, TextSelection } from "@tiptap/pm/state";
 import {
   isolateSelectionForBlockFormatting,
   mergeSelectedTextblocksIntoCodeBlock,
+  splitSelectedLinesForListFormatting,
 } from "./selectionBlockFormatting.ts";
 
 // Matching useRichTextEditor's StarterKit configuration (minus things
@@ -146,4 +147,35 @@ test("selection isolation still splits around the selected text", () => {
     next.doc.textBetween(next.selection.from, next.selection.to),
     "selected",
   );
+});
+
+test("list splitting turns selected hard breaks into separate textblocks", () => {
+  const documentNode = doc(para(t("one"), br(), t("two"), br(), t("three")));
+  const state = EditorState.create({
+    doc: documentNode,
+    selection: TextSelection.create(documentNode, 1, 14),
+  });
+
+  const transaction = state.tr;
+  assert.equal(splitSelectedLinesForListFormatting(transaction), true);
+  const next = state.apply(transaction);
+  assert.deepEqual(paragraphTexts(next.doc), ["one", "two", "three"]);
+});
+
+test("code merge preserves hard breaks", () => {
+  const documentNode = doc(para(t("one"), br(), t("two")), para(t("three")));
+  const state = EditorState.create({
+    doc: documentNode,
+    selection: TextSelection.create(
+      documentNode,
+      1,
+      documentNode.content.size - 1,
+    ),
+  });
+
+  const transaction = state.tr;
+  assert.equal(mergeSelectedTextblocksIntoCodeBlock(transaction), true);
+  const next = state.apply(transaction);
+  assert.equal(next.doc.firstChild.type.name, "codeBlock");
+  assert.equal(next.doc.firstChild.textContent, "one\ntwo\nthree");
 });
