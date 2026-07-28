@@ -35,9 +35,12 @@ const MODEL_LANGUAGE: &str = "english_2026-04";
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 const EOS_LOGIT_THRESHOLD: f32 = -4.0;
 const DECODER_CHUNK_FRAMES: usize = 12;
+const GENERATION_PROGRESS_SHARE: f32 = 0.9;
 const ONNX_THREADS: usize = 4;
 const TOKENS_PER_SECOND_ESTIMATE: f32 = 3.0;
 const GENERATION_SECONDS_PADDING: f32 = 2.0;
+
+type ProgressCallback<'a> = Option<&'a mut dyn FnMut(&[f32], f32) -> bool>;
 
 #[derive(Debug, Deserialize)]
 struct Bundle {
@@ -248,7 +251,12 @@ impl AprilPocketTts {
         &mut self,
         prepared: &PreparedPrompt,
         style: &VoiceStyle,
+        mut callback: ProgressCallback<'_>,
     ) -> Result<Vec<f32>, String> {
+        if !should_continue(&mut callback, &[], 0.0) {
+            return Ok(Vec::new());
+        }
+
         let voice_embeddings = self.voice_embeddings(style)?;
         let mut flow_state = self.condition_voice(&voice_embeddings)?;
         let token_ids = self
@@ -275,9 +283,18 @@ impl AprilPocketTts {
         let text_embeddings = self.text_embeddings(token_ids)?;
         self.run_flow_main_prefix(&text_embeddings, &mut flow_state)?;
         let max_frames = estimate_max_frames(token_count, self.bundle.frame_rate);
-        let latents =
-            self.generate_latents(max_frames, prepared.frames_after_eos, &mut flow_state)?;
-        self.decode_latents(&latents)
+        let Some(latents) = self.generate_latents(
+            max_frames,
+            prepared.frames_after_eos,
+            &mut flow_state,
+            &mut callback,
+        )?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(self
+            .decode_latents(&latents, &mut callback)?
+            .unwrap_or_default())
     }
 
     fn prepared_token_count(&self, text: &str) -> Result<usize, String> {
@@ -442,13 +459,19 @@ impl AprilPocketTts {
         max_frames: usize,
         frames_after_eos: usize,
         state: &mut [StateValue],
-    ) -> Result<Vec<f32>, String> {
+        callback: &mut ProgressCallback<'_>,
+    ) -> Result<Option<Vec<f32>>, String> {
         let mut current = vec![f32::NAN; self.bundle.latent_dim];
         let mut latents = Vec::with_capacity(max_frames * self.bundle.latent_dim);
         let mut eos_step = None;
         let mut rng = rand::rng();
 
         for step in 0..max_frames {
+            let progress = GENERATION_PROGRESS_SHARE * (step as f32 / max_frames.max(1) as f32);
+            if !should_continue(callback, &[], progress) {
+                return Ok(None);
+            }
+
             let sequence = Tensor::from_array((
                 vec![1_i64, 1, self.bundle.latent_dim as i64],
                 current.clone().into_boxed_slice(),
@@ -534,12 +557,16 @@ impl AprilPocketTts {
             current.clone_from(&noise);
             latents.extend_from_slice(&noise);
         }
-        Ok(latents)
+        Ok(Some(latents))
     }
 
-    fn decode_latents(&mut self, latents: &[f32]) -> Result<Vec<f32>, String> {
+    fn decode_latents(
+        &mut self,
+        latents: &[f32],
+        callback: &mut ProgressCallback<'_>,
+    ) -> Result<Option<Vec<f32>>, String> {
         if latents.is_empty() {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         }
         if !latents.len().is_multiple_of(self.bundle.latent_dim) {
             return Err(format!(
@@ -573,9 +600,21 @@ impl AprilPocketTts {
                 .1;
             audio.extend_from_slice(samples);
             replace_state_from_outputs(&mut state, &mut outputs)?;
+
+            let progress = GENERATION_PROGRESS_SHARE
+                + (1.0 - GENERATION_PROGRESS_SHARE) * (end as f32 / frame_count as f32);
+            if !should_continue(callback, &audio, progress) {
+                return Ok(None);
+            }
         }
-        Ok(audio)
+        Ok(Some(audio))
     }
+}
+
+fn should_continue(callback: &mut ProgressCallback<'_>, samples: &[f32], progress: f32) -> bool {
+    callback
+        .as_mut()
+        .is_none_or(|callback| callback(samples, progress.clamp(0.0, 1.0)))
 }
 
 fn load_session(path: PathBuf) -> Result<Session, String> {

@@ -214,10 +214,29 @@ impl PocketTts {
     pub fn synth_chunk(
         &self,
         text: &str,
+        lang: &str,
+        style: &VoiceStyle,
+        steps: usize,
+    ) -> Result<Vec<f32>, String> {
+        self.synth_chunk_with_callback(text, lang, style, steps, None::<fn(&[f32], f32) -> bool>)
+    }
+
+    /// Synthesise `text`, allowing the caller to stop generation early.
+    ///
+    /// The callback receives the samples generated so far and a progress
+    /// value in `[0, 1]`. Return `true` to continue or `false` to cancel.
+    /// Clients that do not need cancellation should use [`Self::synth_chunk`].
+    pub fn synth_chunk_with_callback<F>(
+        &self,
+        text: &str,
         _lang: &str,
         style: &VoiceStyle,
         _steps: usize,
-    ) -> Result<Vec<f32>, String> {
+        mut callback: Option<F>,
+    ) -> Result<Vec<f32>, String>
+    where
+        F: FnMut(&[f32], f32) -> bool + 'static,
+    {
         // Mirror the April bundle's prompt normalization and EOS policy.
         let prepared = match prepare_pocket_prompt(text) {
             Some(p) => p,
@@ -227,7 +246,13 @@ impl PocketTts {
         self.inner
             .lock()
             .map_err(|_| "Pocket TTS engine lock poisoned".to_string())?
-            .synth_chunk(&prepared, style)
+            .synth_chunk(
+                &prepared,
+                style,
+                callback
+                    .as_mut()
+                    .map(|callback| callback as &mut dyn FnMut(&[f32], f32) -> bool),
+            )
     }
 }
 
@@ -304,5 +329,38 @@ mod tests {
     fn prepare_prompt_does_not_add_an_onset_prefix() {
         let out = prepare_pocket_prompt("I'm happy.").expect("non-empty");
         assert_eq!(out.text, "I'm happy.");
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR"]
+    fn callback_can_cancel_before_model_inference() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let dir = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to the verified April bundle");
+        let engine = load_text_to_speech(&dir).expect("load April bundle");
+        let voice =
+            load_voice_style(&Path::new(&dir).join(format!("{DEFAULT_VOICE}.{VOICE_FILE_EXT}")))
+                .expect("load reference voice");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+
+        let samples = engine
+            .synth_chunk_with_callback(
+                "Cancel immediately.",
+                "en",
+                &voice,
+                1,
+                Some(move |_: &[f32], progress| {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                    assert_eq!(progress, 0.0);
+                    false
+                }),
+            )
+            .expect("cancel synthesis");
+
+        assert!(samples.is_empty());
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
