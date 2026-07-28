@@ -92,6 +92,67 @@ function isolateCaretLineForBlockFormatting(transaction: Transaction): boolean {
   return true;
 }
 
+function listItemTextRange(
+  $position: Transaction["selection"]["$from"],
+): { from: number; to: number } | null {
+  let itemDepth = -1;
+  for (let depth = $position.depth; depth > 0; depth -= 1) {
+    if ($position.node(depth).type.name === "listItem") {
+      itemDepth = depth;
+      break;
+    }
+  }
+  if (itemDepth < 0) return null;
+
+  const item = $position.node(itemDepth);
+  const itemPosition = $position.before(itemDepth);
+  let from: number | null = null;
+  let to: number | null = null;
+  item.descendants((node, relativePosition) => {
+    if (!node.isTextblock) return true;
+    const position = itemPosition + 1 + relativePosition;
+    from ??= position + 1;
+    to = position + node.nodeSize - 1;
+    return false;
+  });
+  return from === null || to === null ? null : { from, to };
+}
+
+/** Expand partial list endpoint selections to whole list-item textblocks. */
+function expandSelectionToListItems(transaction: Transaction): boolean {
+  const selection = transaction.selection;
+  if (!(selection instanceof TextSelection) || selection.empty) return false;
+
+  const startItem = listItemTextRange(selection.$from);
+  const endItem = listItemTextRange(selection.$to);
+  if (!(startItem || endItem)) return false;
+
+  const isBackward = selection.anchor > selection.head;
+  const from = startItem?.from ?? selection.from;
+  const to = endItem?.to ?? selection.to;
+  transaction.setSelection(
+    TextSelection.create(
+      transaction.doc,
+      isBackward ? to : from,
+      isBackward ? from : to,
+    ),
+  );
+  return true;
+}
+
+export function selectionIncludesList(transaction: Transaction): boolean {
+  const { from, to } = transaction.selection;
+  let includesList = false;
+  transaction.doc.nodesBetween(from, to, (node) => {
+    if (node.type.name === "listItem") {
+      includesList = true;
+      return false;
+    }
+    return !includesList;
+  });
+  return includesList;
+}
+
 function normalizeSelectionBlockBoundaries(transaction: Transaction): boolean {
   const selection = transaction.selection;
   if (!(selection instanceof TextSelection) || selection.empty) return false;
@@ -148,6 +209,7 @@ export function isolateSelectionForBlockFormatting(
     return isolateCaretLineForBlockFormatting(transaction);
   }
 
+  expandSelectionToListItems(transaction);
   normalizeSelectionBlockBoundaries(transaction);
   const isBackward = transaction.selection.anchor > transaction.selection.head;
   let { from, to } = transaction.selection;

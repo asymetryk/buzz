@@ -270,6 +270,49 @@ for (const list of [
   });
 }
 
+test("partial list-item selections snap to whole items for block formats", async ({
+  page,
+}) => {
+  for (const format of [
+    "Code block",
+    "Bullet list",
+    "Ordered list",
+    "Quote",
+  ] as const) {
+    await openGeneral(page);
+    const input = page.getByTestId("message-input");
+    await input.click();
+    await input.pressSequentially("before");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("first");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("second");
+    await input.press("Shift+Enter");
+    await input.pressSequentially("after");
+    await selectTextRange(input, "before", "after");
+    await page
+      .getByTestId("selection-formatting-tray")
+      .getByRole("button", { name: "Bullet list" })
+      .click();
+
+    await selectTextRange(input, "irst", "seco");
+    await page
+      .getByTestId("selection-formatting-tray")
+      .getByRole("button", { name: format })
+      .click();
+
+    await expect(input).toContainText("before");
+    await expect(input).toContainText("first");
+    await expect(input).toContainText("second");
+    await expect(input).toContainText("after");
+    await expect(input.locator(":scope > ul li")).toContainText([
+      "before",
+      "after",
+    ]);
+    await page.reload();
+  }
+});
+
 test("selected hard-break lines stay newline-separated in one code block", async ({
   page,
 }) => {

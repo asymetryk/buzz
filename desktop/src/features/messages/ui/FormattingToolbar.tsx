@@ -19,6 +19,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import {
   isolateSelectionForBlockFormatting,
   mergeSelectedTextblocksIntoCodeBlock,
+  selectionIncludesList,
   splitSelectedLinesForListFormatting,
 } from "@/features/messages/lib/selectionBlockFormatting";
 import { getEditorSpoilerRangeState } from "@/features/messages/lib/spoilerFormatting";
@@ -213,18 +214,14 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
       return;
     }
 
-    const selection = editor?.state.selection;
-    const isInList = selection
-      ? Array.from(
-          { length: selection.$from.depth + 1 },
-          (_, depth) => selection.$from.node(depth).type.name,
-        ).some((name) => name === "bulletList" || name === "orderedList")
-      : false;
     let conversion = chain.command(({ tr }) => {
       isolateSelectionForBlockFormatting(tr);
       return true;
     });
-    if (isInList) conversion = conversion.clearNodes();
+    conversion = conversion.command(({ tr, chain: currentChain }) => {
+      if (!selectionIncludesList(tr)) return true;
+      return currentChain().liftListItem("listItem").run();
+    });
     conversion
       .command(({ tr }) => mergeSelectedTextblocksIntoCodeBlock(tr))
       .run();
@@ -279,6 +276,10 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
         splitSelectedLinesForListFormatting(tr);
         return true;
       })
+      .command(({ tr, chain: currentChain }) => {
+        if (!selectionIncludesList(tr)) return true;
+        return currentChain().liftListItem("listItem").run();
+      })
       .toggleBulletList()
       .run();
   }, [formattingChain]);
@@ -289,6 +290,10 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
         splitSelectedLinesForListFormatting(tr);
         return true;
       })
+      .command(({ tr, chain: currentChain }) => {
+        if (!selectionIncludesList(tr)) return true;
+        return currentChain().liftListItem("listItem").run();
+      })
       .toggleOrderedList()
       .run();
   }, [formattingChain]);
@@ -298,6 +303,10 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
       ?.command(({ tr }) => {
         isolateSelectionForBlockFormatting(tr);
         return true;
+      })
+      .command(({ tr, chain: currentChain }) => {
+        if (!selectionIncludesList(tr)) return true;
+        return currentChain().liftListItem("listItem").run();
       })
       .toggleBlockquote()
       .run();
