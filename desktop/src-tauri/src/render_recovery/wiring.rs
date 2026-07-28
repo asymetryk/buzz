@@ -20,7 +20,7 @@ use tauri::{Manager, Runtime};
 use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
 
 use super::episode::Termination;
-use super::session::Session;
+use super::session::{CrashResponse, Session};
 use super::LOG;
 
 /// Everything the ladder needs from the live app.
@@ -42,15 +42,18 @@ pub(crate) fn plugin<R: Runtime>(session: Arc<Session>) -> TauriPlugin<R> {
                 platform
                     .inner()
                     .connect_web_process_terminated(move |_, reason| {
-                        let handed_off = session
-                            .on_web_process_terminated(classify(reason), &|| {
-                                tauri_plugin_single_instance::destroy(&app)
-                            });
-                        // A child owns the app now. Exit through Tauri so the
-                        // ordinary shutdown path still runs; two Buzz processes
-                        // must never be live at once.
-                        if handed_off {
-                            app.exit(0);
+                        let response = session.on_web_process_terminated(classify(reason), &|| {
+                            tauri_plugin_single_instance::destroy(&app)
+                        });
+                        // Exit through Tauri in both terminal cases so the
+                        // ordinary shutdown path still runs. `HandedOff`: a
+                        // child owns the app now, and two Buzz processes must
+                        // never be live at once. `Stranded`: the single-instance
+                        // name was released and cannot be taken back, so this
+                        // process is no longer able to be the app.
+                        match response {
+                            CrashResponse::HandedOff | CrashResponse::Stranded => app.exit(0),
+                            CrashResponse::Continue => {}
                         }
                     });
             }) {

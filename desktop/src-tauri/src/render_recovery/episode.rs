@@ -78,9 +78,16 @@ pub(crate) enum Claimed {
     /// This process exclusively owns `episode` at `tier`, and `started` is
     /// durable.
     Owner { episode: Episode, tier: usize },
-    /// This process is not the owner. It writes nothing and runs on as an
-    /// ordinary launch; the single-instance plugin decides its fate.
-    Yielded(&'static str),
+    /// Another process is this episode's owner, or a newer episode has
+    /// superseded it. This child must exit *without* competing for the
+    /// single-instance name: if it took the name ahead of the true owner, the
+    /// owner would exit as a duplicate while the durable `started` receipt
+    /// still named it.
+    Superseded(&'static str),
+    /// Nobody owns this episode and nobody else is going to. Exiting here would
+    /// cost the user their window for nothing, so this child runs on with the
+    /// environment it was handed and the ladder simply stops tracking it.
+    Untracked(&'static str),
 }
 
 /// Exclusively claim the prepared record this child was launched for.
@@ -89,41 +96,77 @@ pub(crate) enum Claimed {
 /// time a delayed child runs, a retry may have prepared a newer generation, and
 /// adopting the record's generation would let the stale child write the newer
 /// generation's receipt.
+///
+/// The read, the claim, and the `started` write all happen inside one
+/// transaction. Split across three unsynchronized steps they were not enough: a
+/// child could read its own generation as current, be descheduled while another
+/// invocation durably prepared the next generation, then resume and stamp its
+/// stale `started` over the newer record.
 pub(crate) fn claim(store: &Store, episode: &Episode) -> Claimed {
+    let tx = match store.lock() {
+        Ok(tx) => tx,
+        Err(error) => {
+            eprintln!("{}: could not take the state lock: {error}", super::LOG);
+            return Claimed::Untracked("the state lock could not be taken");
+        }
+    };
+
     let Some(record) = store.read() else {
-        return Claimed::Yielded("no episode record");
+        return Claimed::Untracked("no episode record");
     };
     if record.token != episode.token || record.generation != episode.generation {
-        return Claimed::Yielded("this episode is no longer current");
+        return Claimed::Superseded("this episode is no longer current");
     }
     if record.phase != Phase::Prepared {
-        return Claimed::Yielded("this episode was already claimed");
+        return Claimed::Superseded("this episode was already claimed");
     }
 
-    match store.claim(&episode.token, episode.generation) {
+    match store.claim(&tx, &episode.token, episode.generation) {
         Claim::Won => {}
-        Claim::Lost => return Claimed::Yielded("another child claimed this episode first"),
+        Claim::Lost => return Claimed::Superseded("another child claimed this episode first"),
         Claim::Failed(error) => {
+            // No receipt exists to falsify, and the sibling child would hit the
+            // same filesystem error, so there is nothing here to defer to.
             eprintln!("{}: claim failed: {error}", super::LOG);
-            return Claimed::Yielded("the claim could not be taken exclusively");
+            return Claimed::Untracked("the claim could not be taken exclusively");
         }
     }
 
     let mut started = record.clone();
     started.phase = Phase::Started;
     started.pid = Some(std::process::id());
-    if let Err(error) = store.write(&started) {
-        // The claim is taken and cannot be given back, so yielding here would
-        // strand the episode. Run on instead: the record still says `prepared`,
-        // and the next launch retries or advances it.
+    if let Err(error) = store.write(&tx, &started) {
+        // The claim is taken and cannot be given back, so this process is the
+        // owner whether or not the receipt landed. Run on untracked: the record
+        // still says `prepared`, and the next launch retries or advances it.
         eprintln!("{}: failed to persist started: {error}", super::LOG);
-        return Claimed::Yielded("the started receipt could not be persisted");
+        return Claimed::Untracked("the started receipt could not be persisted");
     }
 
     Claimed::Owner {
         episode: episode.clone(),
         tier: record.tier,
     }
+}
+
+/// Whether `episode` may still write `next` over `current`.
+///
+/// Two independent conditions, both necessary. The identity check rejects a
+/// receipt from an episode that is no longer current — a `confirmed` write
+/// racing the crash handoff that already prepared the next token would
+/// otherwise resurrect the superseded attempt. The phase check rejects a
+/// receipt that does not move the episode forward, so a duplicated or
+/// out-of-order callback cannot walk the record backwards.
+pub(crate) fn may_advance(current: Option<&Record>, episode: &Episode, next: Phase) -> bool {
+    let Some(current) = current else {
+        // Nothing on disk to advance. The record a receipt belongs to is
+        // written by the parent before the child exists, so its absence means
+        // this episode was cleared — not that a receipt should create it.
+        return false;
+    };
+    current.token == episode.token
+        && current.generation == episode.generation
+        && current.phase.precedes(next)
 }
 
 /// The record a parent must make durable before spawning a child for `tier`.

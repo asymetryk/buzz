@@ -66,7 +66,7 @@ impl Tag {
     }
 }
 
-/// Why a relaunch did not happen. Every arm leaves the current process running.
+/// Why a relaunch did not happen.
 #[derive(Debug)]
 pub(crate) enum Refusal {
     /// The name has an owner, or the bus could not answer. Either way this is
@@ -82,6 +82,37 @@ pub(crate) enum Refusal {
     StateNotDurable(String),
     /// The requested rung is not in this package's ladder.
     NoTier(String),
+}
+
+/// The outcome of a handoff attempt, with the release of the single-instance
+/// name made visible in the type.
+///
+/// A plain `Result<(), Refusal>` conflated the two refusals, and the difference
+/// is the whole safety property: releasing the name is irreversible, so a
+/// caller that has released it can never simply run on. Only the caller knows
+/// whether its release closure actually released anything — at boot no name is
+/// held yet — so this type reports *where* the refusal happened and leaves the
+/// consequence to the call site.
+#[derive(Debug)]
+pub(crate) enum Handoff {
+    /// A child was spawned with the tier's exact environment. It is Buzz now.
+    Launched,
+    /// Refused while the caller still held everything it started with. Nothing
+    /// was released; running on is safe.
+    RefusedBeforeRelease(Refusal),
+    /// Refused after the release closure ran. For a live app that closure
+    /// destroyed the single-instance plugin, so there is no way back.
+    RefusedAfterRelease(Refusal),
+}
+
+impl Handoff {
+    /// Whether no child was launched, so any state prepared for one must be
+    /// rolled back. Deliberately blind to *which* side of the release it was:
+    /// the rollback is the same either way, and only the process lifecycle
+    /// decision cares about the side.
+    pub(crate) fn refused(&self) -> bool {
+        !matches!(self, Handoff::Launched)
+    }
 }
 
 impl std::fmt::Display for Refusal {
@@ -133,9 +164,12 @@ pub(crate) fn exact_env_command(
 
 /// The spawn edge, as a plain function pointer so tests can drive the refusal
 /// and success branches without ever forking a real process.
+///
+/// Takes an already-resolved binary: resolving it is a preflight that must
+/// happen before the name is released, so it cannot be part of this edge.
 pub(crate) type Launch = fn(
     &str,
-    Result<std::path::PathBuf, String>,
+    &std::path::Path,
     &[std::ffi::OsString],
     Package,
     &'static Tier,
@@ -144,12 +178,17 @@ pub(crate) type Launch = fn(
 
 /// Prove the name is free, then spawn the attempt.
 ///
+/// Everything here is necessarily *after* the caller released the name: the
+/// probe is only meaningful once this process has stopped holding the name
+/// itself. That is why the caller must treat a refusal from this function as
+/// terminal, and why every check that can be made earlier is made earlier.
+///
 /// Any prepared record must already be durable: the child claims it as its
 /// first action, and a child that arrives before the record does would find
 /// nothing to claim.
 pub(crate) fn spawn(
     dbus_name: &str,
-    binary: Result<std::path::PathBuf, String>,
+    binary: &std::path::Path,
     args: &[std::ffi::OsString],
     package: Package,
     tier: &Tier,
@@ -166,7 +205,7 @@ pub(crate) fn spawn(
         Observation::Unavailable(detail) => return Err(Refusal::NameNotFree(detail)),
     }
 
-    exact_env_command(binary.map_err(Refusal::NoBinary)?, args, package, tier, tag)
+    exact_env_command(binary.to_path_buf(), args, package, tier, tag)
         .spawn()
         .map(|child| child.id())
         .map_err(|error| Refusal::SpawnFailed(error.to_string()))

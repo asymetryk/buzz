@@ -151,8 +151,17 @@ pub fn run() {
         render_recovery::Boot::Run(session) => Some(session),
         // Recovery is off for this launch; the app still starts normally.
         render_recovery::Boot::Off(_) => None,
-        // A child is Buzz now, or --reset-rendering-mode did its work.
-        render_recovery::Boot::HandedOff | render_recovery::Boot::Reset => return,
+        // A child is Buzz now, --reset-rendering-mode did its work, or another
+        // process owns this episode and this one must not compete for the name.
+        render_recovery::Boot::HandedOff
+        | render_recovery::Boot::Reset
+        | render_recovery::Boot::Superseded => return,
+        // The user asked for something that cannot be delivered. Say so and
+        // exit non-zero rather than starting an app that ignores the request.
+        render_recovery::Boot::Fatal(diagnostic) => {
+            eprintln!("buzz-desktop: {diagnostic}");
+            std::process::exit(1);
+        }
     };
 
     // mesh-llm's async chains (model download, node start/join) overflow

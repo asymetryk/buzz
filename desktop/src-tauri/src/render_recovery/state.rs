@@ -11,15 +11,29 @@
 //! the first attempt's file. Claim files are never deleted: a stale claim is
 //! inert evidence that a generation already ran, and deleting one cannot be
 //! fused with the record write into a single durable step.
+//!
+//! An exclusive claim only serializes the creation of one claim file, which is
+//! not enough on its own: reading the record, validating it, and writing the
+//! next phase are three operations, and a writer descheduled between them could
+//! stamp a stale phase onto a newer episode. So every transition runs inside
+//! [`Store::lock`], and every receipt additionally has to prove the record is
+//! still the one it belongs to (`episode::may_advance`). The lock orders
+//! writers; the identity check is what makes a delayed writer harmless.
 
 use serde::{Deserialize, Serialize};
 use std::io::Write as _;
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 
 /// Where the record and claim files live, relative to the app data dir.
 const DIR: &str = "render-recovery";
 const RECORD: &str = "episode.json";
 const CLAIMS: &str = "claims";
+/// The transaction lock, a **sibling** of `DIR` rather than a child: `clear()`
+/// removes `DIR` wholesale, and a lock inode inside it would be unlinked from
+/// under a concurrent holder — leaving two processes each holding a "lock" on a
+/// different inode.
+const LOCK: &str = "render-recovery.lock";
 
 /// The sole retry generation. An attempt whose child never claimed is retried
 /// exactly once, under generation 1; there is no generation 2.
@@ -39,6 +53,31 @@ pub(crate) enum Phase {
     Confirmed,
     /// The ladder ran out of rungs for this package. Terminal.
     Exhausted,
+}
+
+impl Phase {
+    /// Position in the `prepared → started → owned → confirmed` chain, used to
+    /// reject a receipt that would move an episode backwards.
+    ///
+    /// `Exhausted` is deliberately above every other phase: it is terminal, and
+    /// a late receipt from the attempt that exhausted the ladder must not
+    /// reopen it.
+    fn rank(self) -> u8 {
+        match self {
+            Phase::Prepared => 0,
+            Phase::Started => 1,
+            Phase::Owned => 2,
+            Phase::Confirmed => 3,
+            Phase::Exhausted => 4,
+        }
+    }
+
+    /// Whether `next` is a forward move from `self`. Equal phases are not
+    /// forward: a repeated receipt has nothing to add, and rejecting it keeps
+    /// the transition idempotent rather than merely harmless.
+    pub(crate) fn precedes(self, next: Phase) -> bool {
+        self.rank() < next.rank()
+    }
 }
 
 /// The durable record. One file, rewritten atomically at each transition.
@@ -95,6 +134,18 @@ impl Record {
 /// Filesystem home of the episode record and its claim files.
 pub(crate) struct Store {
     dir: PathBuf,
+    lock: PathBuf,
+}
+
+/// Proof that the caller holds the cross-process transaction lock.
+///
+/// Every mutation of the record takes one of these by reference, so a
+/// read-validate-write sequence cannot be written without serializing it. The
+/// lock is released when this value drops, and also — the property a lockfile
+/// alone cannot offer — when the holding process dies, since the kernel closes
+/// its descriptors. A crashing parent therefore never wedges the ladder.
+pub(crate) struct Transaction {
+    _file: std::fs::File,
 }
 
 /// Outcome of an exclusive claim attempt.
@@ -113,7 +164,40 @@ impl Store {
     pub(crate) fn new(app_data_dir: &Path) -> Self {
         Store {
             dir: app_data_dir.join(DIR),
+            lock: app_data_dir.join(LOCK),
         }
+    }
+
+    /// Serialize every writer of this store against each other.
+    ///
+    /// `flock` rather than an `O_EXCL` lockfile because it is released by the
+    /// kernel on process death: a lockfile left behind by a process that
+    /// crashed mid-transition — exactly the failure this feature exists to
+    /// handle — would need a liveness heuristic to break, and a wrong guess
+    /// there either wedges recovery forever or defeats the mutual exclusion.
+    pub(crate) fn lock(&self) -> Result<Transaction, String> {
+        if let Some(parent) = self.lock.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&self.lock)
+            .map_err(|e| format!("open {}: {e}", self.lock.display()))?;
+        // Blocking: the critical sections are one small file write each, and a
+        // caller that gave up on the lock would have to either skip its
+        // transition or race it — both worse than waiting.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(format!(
+                "lock {}: {}",
+                self.lock.display(),
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(Transaction { _file: file })
     }
 
     fn record_path(&self) -> PathBuf {
@@ -134,7 +218,10 @@ impl Store {
     /// Atomically replace the record. Durability matters here: a torn record
     /// after a crash would be indistinguishable from a corrupt one and would
     /// silently restart the ladder.
-    pub(crate) fn write(&self, record: &Record) -> Result<(), String> {
+    ///
+    /// Requires a `Transaction`, so the read this write is based on and the
+    /// write itself are always inside one critical section.
+    pub(crate) fn write(&self, _tx: &Transaction, record: &Record) -> Result<(), String> {
         use atomic_write_file::AtomicWriteFile;
 
         std::fs::create_dir_all(&self.dir)
@@ -151,24 +238,38 @@ impl Store {
 
     /// Delete the record and every claim. Used by `--reset-rendering-mode` and
     /// when a record cannot be parsed. Returns whether anything was there.
-    pub(crate) fn clear(&self) -> bool {
+    pub(crate) fn clear(&self, _tx: &Transaction) -> bool {
         let existed = self.dir.exists();
         let _ = std::fs::remove_dir_all(&self.dir);
         existed
     }
 
-    /// Drop the claim files of superseded episodes, before a fresh one is
-    /// prepared.
+    /// Drop the claim files of superseded episodes, keeping every claim that
+    /// belongs to `keep_token`.
     ///
     /// This is not the deletion the contract forbids. That rule protects the
     /// *current* token, whose sole retry must not be able to erase its own
-    /// first attempt's evidence — hence the `(token, generation)` key. A claim
-    /// belonging to an older token can strand nothing: a delayed child of a
-    /// superseded episode is turned away by the token check against the record
-    /// long before it looks at a claim file. Without this the directory grows
-    /// by one file per relaunch, forever.
-    pub(crate) fn reset_claims(&self) {
-        let _ = std::fs::remove_dir_all(self.dir.join(CLAIMS));
+    /// first attempt's evidence — hence the `(token, generation)` key and the
+    /// filter here. A claim belonging to an older token can strand nothing: a
+    /// delayed child of a superseded episode is turned away by the token check
+    /// against the record long before it looks at a claim file. Without this
+    /// the directory grows by one file per relaunch, forever.
+    ///
+    /// Called only *after* the new record is durable. Pruning first would, on a
+    /// failed record write, leave the old record current with its claim
+    /// evidence already gone — and an old child that had passed its record read
+    /// could then re-create its claim and write a receipt over the record.
+    pub(crate) fn prune_claims(&self, _tx: &Transaction, keep_token: &str) {
+        let claims = self.dir.join(CLAIMS);
+        let Ok(entries) = std::fs::read_dir(&claims) else {
+            return;
+        };
+        let keep = format!("{keep_token}-g");
+        for entry in entries.flatten() {
+            if !entry.file_name().to_string_lossy().starts_with(&keep) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 
     /// Take exclusive ownership of one `(token, generation)`.
@@ -177,7 +278,7 @@ impl Store {
     /// exactly one gets `Ok`. This is the compare-and-transition primitive —
     /// a read-then-rename would let two children both pass the read and the
     /// loser write the last receipt.
-    pub(crate) fn claim(&self, token: &str, generation: u32) -> Claim {
+    pub(crate) fn claim(&self, _tx: &Transaction, token: &str, generation: u32) -> Claim {
         let path = self.claim_path(token, generation);
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -212,6 +313,15 @@ impl Store {
 
     #[cfg(test)]
     pub(crate) fn seed_claim(&self, token: &str, generation: u32) {
-        assert_eq!(self.claim(token, generation), Claim::Won);
+        let tx = self.lock().expect("lock");
+        assert_eq!(self.claim(&tx, token, generation), Claim::Won);
+    }
+
+    /// Write a record outside a transition, for tests that need a starting
+    /// state. Takes and drops its own lock.
+    #[cfg(test)]
+    pub(crate) fn seed_record(&self, record: &Record) {
+        let tx = self.lock().expect("lock");
+        self.write(&tx, record).expect("write");
     }
 }

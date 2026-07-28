@@ -4,6 +4,14 @@
 //! `Command` environments; nothing here spawns a process or touches the session
 //! bus, because the parts that do are the two thin edges (`dbus::observe`,
 //! `Command::spawn`) whose outcomes are injected as inputs.
+//!
+//! This module holds the ladder's own rules — generations, injected deaths, the
+//! tier table, and the environment contract — and the fixtures the two
+//! submodules share. `boot` covers the pre-Tauri seam (flags, forced launches,
+//! refused handoffs); `transitions` covers durable writes under contention.
+
+mod boot;
+mod transitions;
 
 use std::ffi::{OsStr, OsString};
 
@@ -11,12 +19,12 @@ use super::classify::{decide, Decision, Ownership};
 use super::cli;
 use super::dbus::{Observation, Owner};
 use super::episode::{
-    advance, advances_ladder, claim, fresh, prepare, retry_of, Advance, Claimed, Episode,
-    Termination, CRASH_ELIGIBILITY_WINDOW,
+    advance, advances_ladder, claim, fresh, may_advance, prepare, retry_of, Advance, Claimed,
+    Episode, Termination, CRASH_ELIGIBILITY_WINDOW,
 };
 use super::launcher::{exact_env_command, Refusal, Tag, EPISODE, FORCED, GENERATION, PROFILE};
-use super::profiles::{owned_present, Package};
-use super::session::{reconcile, Boot, Disabled};
+use super::profiles::{owned_present, Package, Tier};
+use super::session::{reconcile, Boot, CrashResponse, Disabled};
 use super::state::{Phase, Record, Store};
 
 const VERSION: &str = "0.4.26";
@@ -65,10 +73,10 @@ fn alive(_pid: u32) -> bool {
 /// name still owned. No process is ever forked from a test.
 fn refuse(
     _name: &str,
-    _binary: Result<std::path::PathBuf, String>,
+    _binary: &std::path::Path,
     _args: &[OsString],
     _package: Package,
-    _tier: &'static super::profiles::Tier,
+    _tier: &'static Tier,
     _tag: &Tag,
 ) -> Result<u32, Refusal> {
     Err(Refusal::NameNotFree(
@@ -79,10 +87,10 @@ fn refuse(
 /// A spawn edge that reports a child was launched, without launching one.
 fn accept(
     _name: &str,
-    _binary: Result<std::path::PathBuf, String>,
+    _binary: &std::path::Path,
     _args: &[OsString],
     _package: Package,
-    _tier: &'static super::profiles::Tier,
+    _tier: &'static Tier,
     _tag: &Tag,
 ) -> Result<u32, Refusal> {
     Ok(4242)
@@ -98,7 +106,7 @@ fn test_stale_generation_claim_does_not_block_the_retry() {
     let (_dir, store) = store();
     // Generation 0 ran and claimed; its child then died before writing.
     store.seed_claim(TOKEN, 0);
-    store.write(&record(Phase::Prepared, 1, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 1, 1));
 
     let claimed = claim(
         &store,
@@ -115,7 +123,7 @@ fn test_stale_generation_claim_does_not_block_the_retry() {
 #[test]
 fn test_two_children_of_one_generation_produce_exactly_one_receipt() {
     let (_dir, store) = store();
-    store.write(&record(Phase::Prepared, 1, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 1, 1));
     let episode = Episode {
         token: TOKEN.to_string(),
         generation: 1,
@@ -125,7 +133,7 @@ fn test_two_children_of_one_generation_produce_exactly_one_receipt() {
     let second = claim(&store, &episode);
 
     assert!(matches!(first, Claimed::Owner { .. }));
-    assert!(matches!(second, Claimed::Yielded(_)));
+    assert!(matches!(second, Claimed::Superseded(_)));
     assert_eq!(store.claim_count(), 1);
     let written = store.read().expect("record");
     assert_eq!(written.phase, Phase::Started);
@@ -139,7 +147,7 @@ fn test_delayed_child_of_a_superseded_generation_writes_nothing() {
     // gets scheduled. Adopting the record's generation here would let it write
     // the retry's receipt.
     let prepared = record(Phase::Prepared, 1, 1);
-    store.write(&prepared).expect("write");
+    store.seed_record(&prepared);
 
     let claimed = claim(
         &store,
@@ -149,7 +157,7 @@ fn test_delayed_child_of_a_superseded_generation_writes_nothing() {
         },
     );
 
-    assert!(matches!(claimed, Claimed::Yielded(_)));
+    assert!(matches!(claimed, Claimed::Superseded(_)));
     assert_eq!(store.read().expect("record"), prepared);
     assert_eq!(store.claim_count(), 0);
 }
@@ -157,7 +165,7 @@ fn test_delayed_child_of_a_superseded_generation_writes_nothing() {
 #[test]
 fn test_claiming_an_already_started_episode_yields() {
     let (_dir, store) = store();
-    store.write(&record(Phase::Started, 0, 1)).expect("write");
+    store.seed_record(&record(Phase::Started, 0, 1));
 
     let claimed = claim(
         &store,
@@ -167,14 +175,14 @@ fn test_claiming_an_already_started_episode_yields() {
         },
     );
 
-    assert!(matches!(claimed, Claimed::Yielded(_)));
+    assert!(matches!(claimed, Claimed::Superseded(_)));
     assert_eq!(store.claim_count(), 0);
 }
 
 #[test]
 fn test_claiming_another_tokens_episode_yields() {
     let (_dir, store) = store();
-    store.write(&record(Phase::Prepared, 0, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 0, 1));
 
     let claimed = claim(
         &store,
@@ -184,7 +192,7 @@ fn test_claiming_another_tokens_episode_yields() {
         },
     );
 
-    assert!(matches!(claimed, Claimed::Yielded(_)));
+    assert!(matches!(claimed, Claimed::Superseded(_)));
     assert_eq!(store.claim_count(), 0);
 }
 
@@ -484,7 +492,7 @@ fn test_appimage_does_not_treat_the_pinned_gdk_backend_as_user_input() {
 fn test_a_recovery_child_does_not_read_its_injected_profile_as_user_input() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::new(dir.path());
-    store.write(&record(Phase::Prepared, 0, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 0, 1));
 
     // Exactly what the parent hands a tier-1 child.
     let env = env_from(&[
@@ -509,10 +517,10 @@ fn test_a_recovery_child_does_not_read_its_injected_profile_as_user_input() {
 }
 
 #[test]
-fn test_a_child_that_loses_its_claim_runs_on_without_writing() {
+fn test_a_child_that_loses_its_claim_exits_instead_of_racing_the_owner() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Store::new(dir.path());
-    store.write(&record(Phase::Prepared, 0, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 0, 1));
     store.seed_claim(TOKEN, 0);
 
     let env = env_from(&[
@@ -521,6 +529,9 @@ fn test_a_child_that_loses_its_claim_runs_on_without_writing() {
         (EPISODE, TOKEN),
         (GENERATION, "0"),
     ]);
+    // Exiting, not running on: a loser that reached Tauri could take the
+    // single-instance name ahead of the owner named in the durable `started`
+    // receipt, and the owner would then exit as a duplicate.
     match reconcile(
         Ok(dir.path().to_path_buf()),
         IDENTIFIER,
@@ -529,8 +540,8 @@ fn test_a_child_that_loses_its_claim_runs_on_without_writing() {
         &env,
         refuse,
     ) {
-        Boot::Run(_) => {}
-        _ => panic!("a claim loser still runs; the plugin decides its fate"),
+        Boot::Superseded => {}
+        _ => panic!("a claim loser must exit before competing for the name"),
     }
     assert_eq!(store.read().expect("record").phase, Phase::Prepared);
 }
@@ -651,107 +662,12 @@ fn test_the_child_inherits_the_parents_arguments() {
     );
 }
 
-// ── Flags and reset ─────────────────────────────────────────────────────────
-
-#[test]
-fn test_the_renderer_flags_parse_independently_of_position() {
-    let args = [
-        OsStr::new("buzz://channel/1"),
-        OsStr::new("--safe-rendering"),
-    ];
-    let flags = cli::parse(args);
-    assert!(flags.safe_rendering);
-    assert!(!flags.reset_rendering_mode);
-
-    let none = cli::parse([OsStr::new("--safe-renderingX")]);
-    assert!(!none.safe_rendering);
-}
-
-#[test]
-fn test_safe_rendering_forces_the_terminal_tier_without_persisting() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    store.write(&record(Phase::Confirmed, 0, 0)).expect("write");
-    let env = env_from(&[]);
-
-    // Native, so the terminal tier is x11-fallback and the handoff would need a
-    // real spawn — the assertion is that the record is left untouched.
-    let boot = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        vec![OsString::from(cli::SAFE_RENDERING)],
-        &env,
-        refuse,
-    );
-    assert!(!matches!(boot, Boot::Reset));
-    let after = store.read().expect("record");
-    assert_eq!(after.phase, Phase::Confirmed);
-    assert_eq!(after.tier, 0);
-}
-
-#[test]
-fn test_reset_rendering_mode_clears_the_state_and_does_not_launch() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    store.write(&record(Phase::Confirmed, 0, 2)).expect("write");
-    store.seed_claim(TOKEN, 0);
-    let env = env_from(&[]);
-
-    let boot = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        vec![OsString::from(cli::RESET_RENDERING_MODE)],
-        &env,
-        refuse,
-    );
-
-    assert!(matches!(boot, Boot::Reset));
-    assert_eq!(store.read(), None);
-    assert_eq!(store.claim_count(), 0);
-}
-
-#[test]
-fn test_recovery_is_off_when_no_state_directory_exists() {
-    let env = env_from(&[]);
-    let boot = reconcile(
-        Err("no user data directory".to_string()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        refuse,
-    );
-    assert!(matches!(boot, Boot::Off(Disabled::NoStateDir(_))));
-}
-
-#[test]
-fn test_a_baseline_launch_runs_here_without_writing_a_record() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    let env = env_from(&[]);
-
-    match reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        refuse,
-    ) {
-        Boot::Run(session) => assert_eq!(session.profile_name(), "full-gpu"),
-        _ => panic!("a first launch runs tier 0 in this process"),
-    }
-    assert_eq!(store.read(), None);
-}
-
 // ── Durability ──────────────────────────────────────────────────────────────
 
 #[test]
 fn test_an_unparsable_record_reads_as_absent() {
     let (_dir, store) = store();
-    store.write(&record(Phase::Prepared, 0, 1)).expect("write");
+    store.seed_record(&record(Phase::Prepared, 0, 1));
     let path = store.record_path_for_test();
     std::fs::write(&path, b"{not json").expect("corrupt");
     assert_eq!(store.read(), None);
@@ -764,7 +680,7 @@ fn test_a_record_survives_a_round_trip_with_its_owner_identity() {
     written.pid = Some(4242);
     written.unique_name = Some(":1.7".to_string());
     written.bus_id = Some("bus-a".to_string());
-    store.write(&written).expect("write");
+    store.seed_record(&written);
     assert_eq!(store.read(), Some(written));
 }
 
@@ -783,168 +699,4 @@ fn test_preparing_a_record_names_the_tier_it_will_run() {
     assert_eq!(prepared.profile, "cpu-raster");
     assert_eq!(prepared.tier, 2);
     assert_eq!(prepared.version, VERSION);
-}
-
-// ── Forced launches, refused handoffs, and reaching reset ───────────────────
-//
-// Three rules that only hold at the boot seam: a manual override must not teach
-// the ladder anything, a handoff that never happened must not cost a retry, and
-// the escape hatch must stay reachable for the user most likely to need it.
-
-#[test]
-fn test_a_forced_child_runs_its_profile_without_writing_a_record() {
-    // A --safe-rendering parent hands off with BUZZ_RENDER_FORCED and no
-    // episode. The child must run the profile and persist nothing: a forced
-    // launch is not evidence about any tier.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    let env = env_from(&[(PROFILE, "no-accel"), (FORCED, "1")]);
-
-    match reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        refuse,
-    ) {
-        Boot::Run(session) => assert_eq!(session.profile_name(), "no-accel"),
-        _ => panic!("a forced child runs in this process"),
-    }
-    assert_eq!(store.read(), None);
-    assert_eq!(store.claim_count(), 0);
-}
-
-#[test]
-fn test_a_forced_child_that_crashes_does_not_advance_or_persist() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    let env = env_from(&[(PROFILE, "cpu-raster"), (FORCED, "1")]);
-
-    // `accept`, not `refuse`: with a spawn edge that succeeds, a forced launch
-    // that was wrongly tracked would really hand off and leave a record behind.
-    // Against `refuse` the rollback would hide the difference.
-    let Boot::Run(session) = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        accept,
-    ) else {
-        panic!("a forced child runs in this process");
-    };
-
-    // Even a genuine startup crash must leave a forced launch untracked —
-    // otherwise the manual override would rewrite the ladder's own record.
-    assert!(!session.on_web_process_terminated(Termination::Crashed, &|| {}));
-    assert_eq!(store.read(), None);
-    // The confirmation receipt is the other write a forced launch must not make:
-    // it is the persisted "last crash-free startup profile" fact, and a manual
-    // override is not evidence about any tier.
-    session.note_owned();
-    session.note_confirmed();
-    assert_eq!(store.read(), None);
-}
-
-#[test]
-fn test_a_refused_handoff_does_not_spend_the_rungs_retry() {
-    // A confirmed tier-2 record: this launch wants to re-run tier 2, which
-    // needs a child. The spawn is refused, so the durable state must be exactly
-    // what it was — a leftover `prepared` record would make the next launch
-    // burn this rung's one retry on a failure that was never about rendering.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    let before = record(Phase::Confirmed, 0, 2);
-    store.write(&before).expect("write");
-    let env = env_from(&[]);
-
-    match reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        refuse,
-    ) {
-        Boot::Run(session) => {
-            // The handoff did not happen, so this process is still the baseline
-            // it was launched as and must not claim the tier it wanted.
-            assert_eq!(session.profile_name(), "full-gpu");
-        }
-        _ => panic!("a refused handoff leaves the app running here"),
-    }
-    assert_eq!(store.read(), Some(before));
-}
-
-#[test]
-fn test_a_refused_handoff_from_no_record_leaves_no_record() {
-    // Same rule with nothing on disk to roll back to: a `prepared` record
-    // written for a child that was never spawned must be cleared, not left as
-    // an unclaimed attempt for the next launch to inherit.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    // A crash at tier 0 wants tier 1, so the parent prepares then spawns.
-    let env = env_from(&[]);
-    let Boot::Run(session) = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        refuse,
-    ) else {
-        panic!("a first launch runs tier 0 here");
-    };
-
-    assert!(!session.on_web_process_terminated(Termination::Crashed, &|| {}));
-    assert_eq!(store.read(), None);
-}
-
-#[test]
-fn test_a_successful_handoff_leaves_the_prepared_record_for_the_child() {
-    // The mirror of the rollback: when the child really is launched, the
-    // prepared record must survive for it to claim.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    let env = env_from(&[]);
-    let Boot::Run(session) = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        Vec::new(),
-        &env,
-        accept,
-    ) else {
-        panic!("a first launch runs tier 0 here");
-    };
-
-    assert!(session.on_web_process_terminated(Termination::Crashed, &|| {}));
-    let prepared = store.read().expect("the child's record");
-    assert_eq!(prepared.phase, Phase::Prepared);
-    assert_eq!(prepared.tier, 1);
-    assert_eq!(prepared.generation, 0);
-}
-
-#[test]
-fn test_reset_rendering_mode_works_even_with_an_owned_var_set() {
-    // The user who set WEBKIT_DISABLE_DMABUF_RENDERER by hand is exactly the
-    // user most likely to be clearing state an earlier run left behind. If the
-    // opt-out returned first, the escape hatch would be unreachable for them.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::new(dir.path());
-    store.write(&record(Phase::Confirmed, 0, 2)).expect("write");
-    let env = env_from(&[("WEBKIT_DISABLE_DMABUF_RENDERER", "1")]);
-
-    let boot = reconcile(
-        Ok(dir.path().to_path_buf()),
-        IDENTIFIER,
-        VERSION,
-        vec![OsString::from(cli::RESET_RENDERING_MODE)],
-        &env,
-        refuse,
-    );
-
-    assert!(matches!(boot, Boot::Reset));
-    assert_eq!(store.read(), None);
 }
