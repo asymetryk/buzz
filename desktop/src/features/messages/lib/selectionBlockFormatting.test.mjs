@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getSchema } from "@tiptap/core";
+import { getSchema, Node } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorState, TextSelection } from "@tiptap/pm/state";
+
+import { CustomEmojiNode } from "./customEmojiNode.ts";
 
 import {
   isolateSelectionForBlockFormatting,
@@ -13,6 +15,21 @@ import {
 
 // Matching useRichTextEditor's StarterKit configuration (minus things
 // irrelevant to block isolation).
+const MentionNode = Node.create({
+  name: "mention",
+  group: "inline",
+  inline: true,
+  atom: true,
+  addAttributes: () => ({ label: { default: "" } }),
+});
+const UnknownLeaf = Node.create({
+  name: "unknownLeaf",
+  group: "inline",
+  inline: true,
+  atom: true,
+  addAttributes: () => ({ internalId: { default: "secret" } }),
+});
+
 const schema = getSchema([
   StarterKit.configure({
     hardBreak: { keepMarks: true },
@@ -20,6 +37,12 @@ const schema = getSchema([
     trailingNode: false,
     link: false,
   }),
+  MentionNode,
+  CustomEmojiNode.configure({
+    resolveUrl: () => undefined,
+    shortcodes: () => [],
+  }),
+  UnknownLeaf,
 ]);
 
 const para = (...content) => schema.nodes.paragraph.create(null, content);
@@ -178,4 +201,30 @@ test("code merge preserves hard breaks", () => {
   const next = state.apply(transaction);
   assert.equal(next.doc.firstChild.type.name, "codeBlock");
   assert.equal(next.doc.firstChild.textContent, "one\ntwo\nthree");
+});
+
+test("code merge preserves meaningful inline atoms and drops unknown leaves", () => {
+  const documentNode = doc(
+    para(
+      t("hello "),
+      schema.nodes.mention.create({ label: "@Taylor Ho" }),
+      t(" "),
+      schema.nodes.customEmoji.create({ shortcode: "party" }),
+      schema.nodes.unknownLeaf.create(),
+    ),
+  );
+  const state = EditorState.create({
+    doc: documentNode,
+    selection: TextSelection.create(
+      documentNode,
+      1,
+      documentNode.content.size - 1,
+    ),
+  });
+
+  const transaction = state.tr;
+  assert.equal(mergeSelectedTextblocksIntoCodeBlock(transaction), true);
+  const next = state.apply(transaction);
+  assert.equal(next.doc.firstChild.textContent, "hello @Taylor Ho :party:");
+  assert.equal(next.doc.firstChild.textContent.includes("secret"), false);
 });

@@ -297,12 +297,23 @@ function selectedTextblocks(
   return blocks;
 }
 
+function leafTextForCode(leaf: ProseMirrorNode): string {
+  if (leaf.type.name === "hardBreak") return "\n";
+
+  const schemaText = leaf.type.spec.leafText?.(leaf);
+  if (schemaText !== undefined) return schemaText;
+
+  // Inline atoms should survive conversion whenever they expose a meaningful
+  // textual identity. Unknown leaves intentionally fall back to an empty
+  // string rather than leaking implementation attributes into user content.
+  const attrs = leaf.attrs as Record<string, unknown>;
+  if (typeof attrs.label === "string") return attrs.label;
+  if (typeof attrs.shortcode === "string") return `:${attrs.shortcode}:`;
+  return "";
+}
+
 function textblockTextForCode(node: ProseMirrorNode): string {
-  return node.textBetween(0, node.content.size, "\n", (leaf) =>
-    leaf.type.name === "hardBreak"
-      ? "\n"
-      : (leaf.type.spec.leafText?.(leaf) ?? ""),
-  );
+  return node.textBetween(0, node.content.size, "\n", leafTextForCode);
 }
 
 /** Replace selected textblocks with one newline-joined code block. */
