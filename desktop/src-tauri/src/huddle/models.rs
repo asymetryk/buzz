@@ -46,6 +46,10 @@ const STT_ARCHIVE_SHA256: &str = "17f945007b52ccd8b7200ffc7c5652e9e8e961dfdf479c
 const POCKET_HF_BASE: &str =
     "https://huggingface.co/KevinAHM/pocket-tts-onnx/resolve/58a6d00cf13d239b6748cb0769f35c580a8f606c/onnx/english_2026-04";
 
+/// The export's CC-BY-4.0 text lives one directory above the language bundle.
+const POCKET_LICENSE_URL: &str =
+    "https://huggingface.co/KevinAHM/pocket-tts-onnx/resolve/58a6d00cf13d239b6748cb0769f35c580a8f606c/onnx/LICENSE";
+
 /// Reference voice WAV: "Mary (f, conversation)" from the Kyutai TTS demo
 /// voice set — VCTK speaker p333, ai-coustics-enhanced. Pinned to
 /// kyutai/tts-voices commit 323332d33f997de8394f24a193e1a76df720e01a.
@@ -578,7 +582,8 @@ impl ModelManager {
             stt: ModelSlot::new(STT_MODEL_DIR_NAME, STT_EXPECTED_FILES, STT_MODEL_VERSION),
             tts: ModelSlot::new(TTS_MODEL_DIR_NAME, TTS_EXPECTED_FILES, TTS_MODEL_VERSION),
         };
-        manager.stt.recover_interrupted_install(&manager.models_dir);
+        // Preserve the working January cache if the April swap was interrupted
+        // between its backup and install renames.
         manager.tts.recover_interrupted_install(&manager.models_dir);
         Some(manager)
     }
@@ -792,12 +797,12 @@ impl ModelManager {
             "mimi_encoder.onnx",
             "text_conditioner.onnx",
             "tokenizer.model",
-            "LICENSE",
         ];
         let mut downloads: Vec<(String, &'static str)> = model_files
             .iter()
             .map(|filename| (format!("{POCKET_HF_BASE}/{filename}"), *filename))
             .collect();
+        downloads.push((POCKET_LICENSE_URL.to_string(), "LICENSE"));
         downloads.push((POCKET_REFERENCE_WAV_URL.to_string(), "reference_sample.wav"));
         let total_files = downloads.len() as u32;
 

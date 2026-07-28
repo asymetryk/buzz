@@ -38,6 +38,7 @@ const DECODER_CHUNK_FRAMES: usize = 12;
 const ONNX_THREADS: usize = 4;
 const TOKENS_PER_SECOND_ESTIMATE: f32 = 3.0;
 const GENERATION_SECONDS_PADDING: f32 = 2.0;
+const MAX_GENERATION_FRAMES: usize = 500;
 
 #[derive(Debug, Deserialize)]
 struct Bundle {
@@ -206,10 +207,7 @@ impl AprilPocketTts {
         let token_count = token_ids.len();
         let text_embeddings = self.text_embeddings(token_ids)?;
         self.run_flow_main_prefix(&text_embeddings, &mut flow_state)?;
-        let max_frames = ((token_count as f32 / TOKENS_PER_SECOND_ESTIMATE
-            + GENERATION_SECONDS_PADDING)
-            * self.bundle.frame_rate)
-            .ceil() as usize;
+        let max_frames = estimate_max_frames(token_count, self.bundle.frame_rate);
         let latents =
             self.generate_latents(max_frames, prepared.frames_after_eos, &mut flow_state)?;
         self.decode_latents(&latents)
@@ -633,6 +631,12 @@ fn shape_len(shape: &[i64]) -> Result<usize, String> {
     })
 }
 
+fn estimate_max_frames(token_count: usize, frame_rate: f32) -> usize {
+    (((token_count as f32 / TOKENS_PER_SECOND_ESTIMATE + GENERATION_SECONDS_PADDING) * frame_rate)
+        .ceil() as usize)
+        .min(MAX_GENERATION_FRAMES)
+}
+
 fn normal_noise(rng: &mut impl Rng, len: usize, std_dev: f32) -> Vec<f32> {
     let mut out = Vec::with_capacity(len);
     while out.len() < len {
@@ -718,6 +722,12 @@ mod tests {
         let mut rng = rand::rng();
         assert_eq!(normal_noise(&mut rng, 1, 1.0).len(), 1);
         assert_eq!(normal_noise(&mut rng, 32, 1.0).len(), 32);
+    }
+
+    #[test]
+    fn generation_frame_estimate_is_capped() {
+        assert_eq!(estimate_max_frames(3, 12.5), 38);
+        assert_eq!(estimate_max_frames(300, 12.5), MAX_GENERATION_FRAMES);
     }
 
     #[test]
