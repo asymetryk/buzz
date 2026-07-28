@@ -15,12 +15,6 @@
 //! uninterrupted idle is a valid post-idle observation. Run each 5/15-minute
 //! item as a separate process.
 
-// Importing the production module also brings in runtime-only helpers that this
-// standalone corpus generator deliberately does not call.
-#![allow(dead_code)]
-
-#[path = "../../../crates/buzz-voice/src/pocket.rs"]
-mod production_pocket;
 #[path = "../src/huddle/preprocessing.rs"]
 mod production_preprocessing;
 
@@ -33,7 +27,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, Wave};
 
-use production_pocket::{prepare_pocket_prompt, SAMPLE_RATE};
+use buzz_voice_pkg::pocket::{prepare_pocket_prompt, SAMPLE_RATE};
 use production_preprocessing::{preprocess_for_tts, split_sentences};
 
 const NUM_STEPS: i32 = 1;

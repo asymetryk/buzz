@@ -13,5 +13,11 @@ static = ["sherpa-onnx/static"]
 shared = ["sherpa-onnx/shared"]
 
 [dependencies]
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-24", "ndarray", "std"] }
+ort-sys = { version = "=2.0.0-rc.12", features = ["disable-linking"] }
+rand = { workspace = true }
+sentencepiece-model = "0.1"
+serde = { workspace = true }
 serde_json = { workspace = true }
 sherpa-onnx = { version = "1.12", default-features = false }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"] }

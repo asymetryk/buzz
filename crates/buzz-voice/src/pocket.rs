@@ -1,11 +1,8 @@
-//! Pocket TTS engine wrapper around sherpa-onnx's `OfflineTts`.
+//! Pocket TTS engine for caller-provided January and April model bundles.
 //!
-//! Pocket TTS is a small (~473 MB fp32 ONNX) zero-shot voice-cloning TTS
-//! model from Kyutai that runs quickly on CPU via sherpa-onnx.
-//!
-//! Buzz uses full-precision fp32 sessions because a direct same-runtime A/B
-//! (k2-fsa/sherpa-onnx#3172) found the ~189 MB int8 ONNX export audibly
-//! degraded output quality.
+//! The January layout runs through sherpa-onnx's `OfflineTts`. The April
+//! `english_2026-04` bundle uses the same linked ONNX Runtime with its
+//! SentencePiece tokenizer, learned BOS, and recurrent state manifests.
 //!
 //! ## Attribution
 //!
@@ -25,14 +22,12 @@
 //!   in <https://huggingface.co/kyutai/tts-voices>. CC-BY-4.0, base recording
 //!   from the VCTK corpus, enhanced by ai-coustics.
 //!
-//! Buzz ships these files unmodified; see the on-disk `MODEL_LICENSE.txt`
-//! sidecar written by `huddle::models` during install for the canonical
-//! CC-BY-4.0 §3(a)(1) attribution block.
+//! Callers own acquisition, storage, and the required CC-BY-4.0 attribution.
 //!
 //! ## Engine-module contract (see `huddle::tts`)
 //!
-//! `pocket.rs` exposes a fixed surface used by `tts.rs`. Mirroring this
-//! contract is what lets the TTS pipeline stay engine-agnostic:
+//! `pocket.rs` exposes the shared loading and synthesis surface, including
+//! explicit runtime-only model options:
 //!
 //! - `SAMPLE_RATE: u32`             — engine output sample rate in Hz.
 //! - `DEFAULT_VOICE: &str`          — default voice name (without extension).
@@ -52,8 +47,21 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, Wave};
+
+#[path = "pocket_april.rs"]
+mod pocket_april;
+#[path = "pocket_models.rs"]
+mod pocket_models;
+
+use pocket_april::{prepare_april_prompt, AprilPocketTts};
+pub use pocket_models::{
+    april_model_info, PocketLoadOptions, PocketModelArtifact, PocketModelInfo,
+    PocketModelSelection, PocketPrecision, APRIL_BUNDLE_ID, APRIL_MAX_TOKEN_PER_CHUNK,
+    APRIL_MODEL_ID, APRIL_MODEL_REVISION,
+};
 
 // ── Engine-module contract: public consts ─────────────────────────────────────
 
@@ -71,11 +79,6 @@ pub const DEFAULT_VOICE: &str = "reference_sample";
 pub const VOICE_FILE_EXT: &str = "wav";
 
 // ── Tuning ────────────────────────────────────────────────────────────────────
-
-/// Single-threaded ONNX execution for predictable CPU contention with the STT
-/// pipeline. Matches `STT_NUM_THREADS` in `stt.rs`; raise only if a benchmark
-/// argues for it.
-const TTS_NUM_THREADS: i32 = 1;
 
 /// LRU cache size for cloned voice embeddings inside the sherpa-onnx engine.
 /// We bind to one voice per pipeline today, but the upstream example uses 16
@@ -183,23 +186,68 @@ pub fn load_voice_style(path: &Path) -> Result<VoiceStyle, String> {
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
-/// Pocket TTS engine handle. Cheap to construct (one `OfflineTts::create`
-/// call). Owned by the TTS worker thread for the lifetime of a huddle session.
-///
-/// `OfflineTts` does not implement `Debug`, so we don't derive it here — the
-/// pipeline only needs to move the engine into the worker thread and call
-/// `synth_chunk` on it, never to print it.
+/// Pocket TTS engine handle, normally kept resident by its caller.
 pub struct PocketTts {
-    inner: OfflineTts,
+    inner: PocketTtsInner,
+    model_info: Option<PocketModelInfo>,
 }
 
-/// Build the Pocket TTS engine from the model directory installed by
-/// `huddle::models`. Returns `Err` if any expected ONNX or JSON file is
-/// missing — readiness is normally enforced by `is_tts_ready` upstream, but
-/// the check is repeated here so a manually-modified model dir produces a
-/// clear error string instead of an opaque sherpa-onnx `None`.
+enum PocketTtsInner {
+    January(OfflineTts),
+    April(Box<Mutex<AprilPocketTts>>),
+}
+
+/// Build a Pocket TTS engine from a caller-provided model directory.
+///
+/// An April `bundle.json` selects FP32 April automatically. Directories
+/// without that manifest retain the source-compatible January loader.
 pub fn load_text_to_speech(model_dir: &str) -> Result<PocketTts, String> {
+    load_text_to_speech_with_options(model_dir, PocketLoadOptions::default())
+}
+
+/// Build a Pocket TTS engine with explicit runtime-only model options.
+///
+/// Application download, cache, fallback, and UI policy intentionally remain
+/// outside this crate.
+pub fn load_text_to_speech_with_options(
+    model_dir: &str,
+    options: PocketLoadOptions,
+) -> Result<PocketTts, String> {
+    if options.num_threads == 0 {
+        return Err("Pocket TTS num_threads must be at least 1".to_string());
+    }
     let dir = PathBuf::from(model_dir);
+    let april_precision = match options.model {
+        PocketModelSelection::Auto if dir.join("bundle.json").is_file() => {
+            Some(PocketPrecision::Fp32)
+        }
+        PocketModelSelection::Auto => None,
+        PocketModelSelection::English2026_04(precision) => Some(precision),
+    };
+
+    if let Some(precision) = april_precision {
+        let info = april_model_info(precision);
+        for artifact in info.artifacts {
+            let path = dir.join(artifact.filename);
+            if !path.is_file() {
+                return Err(format!(
+                    "incomplete Pocket TTS {} {:?} variant: missing {}",
+                    info.bundle_id,
+                    info.precision,
+                    path.display()
+                ));
+            }
+        }
+        return Ok(PocketTts {
+            inner: PocketTtsInner::April(Box::new(Mutex::new(AprilPocketTts::load(
+                &dir,
+                precision,
+                options.num_threads,
+            )?))),
+            model_info: Some(info),
+        });
+    }
+
     for name in [
         FILE_LM_MAIN,
         FILE_LM_FLOW,
@@ -228,14 +276,22 @@ pub fn load_text_to_speech(model_dir: &str) -> Result<PocketTts, String> {
     cfg.model.pocket.vocab_json = Some(to_str(FILE_VOCAB));
     cfg.model.pocket.token_scores_json = Some(to_str(FILE_TOKEN_SCORES));
     cfg.model.pocket.voice_embedding_cache_capacity = VOICE_EMBEDDING_CACHE_CAPACITY;
-    cfg.model.num_threads = TTS_NUM_THREADS;
+    cfg.model.num_threads = i32::try_from(options.num_threads).map_err(|_| {
+        format!(
+            "Pocket TTS num_threads is too large: {}",
+            options.num_threads
+        )
+    })?;
     // Explicit — defaults are not part of the API contract, and noisy debug
     // logging in release builds would be expensive on every synthesized chunk.
     cfg.model.debug = false;
 
     let inner = OfflineTts::create(&cfg)
         .ok_or_else(|| "OfflineTts::create returned None for Pocket TTS".to_string())?;
-    Ok(PocketTts { inner })
+    Ok(PocketTts {
+        inner: PocketTtsInner::January(inner),
+        model_info: None,
+    })
 }
 
 // ── Prompt preparation ────────────────────────────────────────────────────────
@@ -248,7 +304,8 @@ pub fn load_text_to_speech(model_dir: &str) -> Result<PocketTts, String> {
 /// padded inputs) so it can bound the original "monster breathing" runaway
 /// without disturbing the rest of the LM sampling envelope.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct PreparedPrompt {
+#[doc(hidden)]
+pub struct PreparedPrompt {
     /// Text to hand to `OfflineTts::generate_with_config`. Capitalized,
     /// punctuation-terminated, and (for short inputs) left-padded with
     /// spaces — upstream's mitigation for the FlowLM cold-start smear.
@@ -283,7 +340,8 @@ pub(crate) struct PreparedPrompt {
 ///
 /// Returns `None` only if the input is empty after trimming — caller should
 /// skip synthesis in that case.
-pub(crate) fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
+#[doc(hidden)]
+pub fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return None;
@@ -365,6 +423,36 @@ fn build_generation_extra(prepared: &PreparedPrompt) -> Option<HashMap<String, s
 }
 
 impl PocketTts {
+    /// Metadata for the loaded April model.
+    ///
+    /// January's legacy sherpa layout predates the immutable bundle contract,
+    /// so it returns `None`.
+    pub fn model_info(&self) -> Option<PocketModelInfo> {
+        self.model_info
+    }
+
+    /// Prepare model-valid synthesis units for `text`.
+    ///
+    /// April splits with its bundle tokenizer and exact 50-token constraint.
+    /// The legacy January loader has no equivalent public tokenizer or token
+    /// limit, so it returns the prepared prompt as one synthesis unit.
+    pub fn split_text_into_chunks(&self, text: &str) -> Result<Vec<String>, String> {
+        match &self.inner {
+            PocketTtsInner::January(_) => Ok(prepare_pocket_prompt(text)
+                .map(|prepared| vec![prepared.text])
+                .unwrap_or_default()),
+            PocketTtsInner::April(engine) => {
+                let Some(prepared) = prepare_april_prompt(text) else {
+                    return Ok(Vec::new());
+                };
+                engine
+                    .lock()
+                    .map_err(|_| "Pocket TTS engine lock poisoned".to_string())?
+                    .split_prompt(&prepared)
+            }
+        }
+    }
+
     /// Synthesise `text` with the given reference voice.
     ///
     /// `_lang` and `_steps` are accepted for API compatibility with the
@@ -392,58 +480,88 @@ impl PocketTts {
         _lang: &str,
         style: &VoiceStyle,
         _steps: usize,
-        callback: Option<F>,
+        mut callback: Option<F>,
     ) -> Result<Vec<f32>, String>
     where
         F: FnMut(&[f32], f32) -> bool + 'static,
     {
-        // Mirror upstream pocket-tts prompt prep — without this short or
-        // unpunctuated inputs can cause the LM's EOS logit to never trip,
-        // producing up to 40 s of "monster breathing" garbage on the first
-        // utterance. See `prepare_pocket_prompt` for the full recipe.
-        let prepared = match prepare_pocket_prompt(text) {
-            Some(p) => p,
-            None => return Ok(Vec::new()),
-        };
+        match &self.inner {
+            PocketTtsInner::January(engine) => {
+                // Mirror January upstream prompt preparation and retain its
+                // short-prompt generation bounds.
+                let prepared = match prepare_pocket_prompt(text) {
+                    Some(p) => p,
+                    None => return Ok(Vec::new()),
+                };
+                let cfg = GenerationConfig {
+                    num_steps: SYNTH_NUM_STEPS,
+                    silence_scale: SYNTH_SILENCE_SCALE,
+                    reference_audio: Some(style.samples.clone()),
+                    reference_sample_rate: style.sample_rate,
+                    extra: build_generation_extra(&prepared),
+                    ..Default::default()
+                };
+                let audio = engine
+                    .generate_with_config(&prepared.text, &cfg, callback)
+                    .ok_or_else(|| {
+                        format!(
+                            "Pocket TTS synthesis failed for text ({} chars)",
+                            prepared.text.len()
+                        )
+                    })?;
+                let sample_rate = audio.sample_rate();
+                if sample_rate != SAMPLE_RATE as i32 {
+                    eprintln!(
+                        "buzz-voice: Pocket TTS returned unexpected sample rate {sample_rate}Hz \
+                         (expected {SAMPLE_RATE}Hz); playback speed may be wrong"
+                    );
+                }
+                Ok(audio.samples().to_vec())
+            }
+            PocketTtsInner::April(engine) => {
+                let prepared = match prepare_april_prompt(text) {
+                    Some(prepared) => prepared,
+                    None => return Ok(Vec::new()),
+                };
+                let mut engine = engine
+                    .lock()
+                    .map_err(|_| "Pocket TTS engine lock poisoned".to_string())?;
+                let chunks = engine.split_prompt(&prepared)?;
+                let chunk_count = chunks.len() as f32;
+                let mut samples = Vec::new();
 
-        // Per-call generation hints sherpa-onnx forwards to
-        // `offline-tts-pocket-impl.h`. We only override `max_frames`, and
-        // only for short padded prompts where we have a tight expectation
-        // on output length — that bounds the original runaway without
-        // disturbing the rest of the LM sampling envelope. See
-        // `prepare_pocket_prompt` docs for the regression history.
-        let extra = build_generation_extra(&prepared);
+                for (chunk_index, chunk) in chunks.into_iter().enumerate() {
+                    let prepared = prepare_april_prompt(&chunk)
+                        .ok_or_else(|| "Pocket TTS prompt chunk became empty".to_string())?;
+                    let (chunk_samples, cancelled) = {
+                        let mut cancelled = false;
+                        let mut adapted_callback =
+                            |current_chunk_samples: &[f32], chunk_progress: f32| {
+                                let Some(callback) = callback.as_mut() else {
+                                    return true;
+                                };
+                                let mut cumulative =
+                                    Vec::with_capacity(samples.len() + current_chunk_samples.len());
+                                cumulative.extend_from_slice(&samples);
+                                cumulative.extend_from_slice(current_chunk_samples);
+                                let progress = (chunk_index as f32 + chunk_progress) / chunk_count;
+                                let should_continue = callback(&cumulative, progress);
+                                cancelled = !should_continue;
+                                should_continue
+                            };
+                        let chunk_samples =
+                            engine.synth_chunk(&prepared, style, Some(&mut adapted_callback))?;
+                        (chunk_samples, cancelled)
+                    };
+                    if cancelled {
+                        return Ok(Vec::new());
+                    }
+                    samples.extend(chunk_samples);
+                }
 
-        let cfg = GenerationConfig {
-            num_steps: SYNTH_NUM_STEPS,
-            silence_scale: SYNTH_SILENCE_SCALE,
-            reference_audio: Some(style.samples.clone()),
-            reference_sample_rate: style.sample_rate,
-            extra,
-            // `speed` stays at its default: the Pocket impl never reads it
-            // (see the engine-contract note in the module docs).
-            ..Default::default()
-        };
-
-        let audio = self
-            .inner
-            .generate_with_config(&prepared.text, &cfg, callback)
-            .ok_or_else(|| {
-                format!(
-                    "Pocket TTS synthesis failed for text ({} chars)",
-                    prepared.text.len()
-                )
-            })?;
-
-        let sample_rate = audio.sample_rate();
-        if sample_rate != SAMPLE_RATE as i32 {
-            eprintln!(
-                "buzz-voice: Pocket TTS returned unexpected sample rate {sample_rate}Hz \
-                 (expected {SAMPLE_RATE}Hz); playback speed may be wrong"
-            );
+                Ok(samples)
+            }
         }
-
-        Ok(audio.samples().to_vec())
     }
 }
 
@@ -638,5 +756,139 @@ mod tests {
         const {
             assert!(SHORT_PROMPT_MAX_FRAMES >= 50, "would risk truncation");
         }
+    }
+
+    #[test]
+    fn explicit_april_variant_reports_first_missing_artifact() {
+        let dir =
+            std::env::temp_dir().join(format!("buzz-pocket-incomplete-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create incomplete model dir");
+
+        let error = load_text_to_speech_with_options(
+            dir.to_str().expect("UTF-8 temp path"),
+            PocketLoadOptions {
+                model: PocketModelSelection::English2026_04(PocketPrecision::Int8),
+                num_threads: 1,
+            },
+        )
+        .err()
+        .expect("incomplete variant should fail");
+
+        assert!(error.contains("incomplete Pocket TTS english_2026-04 Int8 variant"));
+        assert!(error.contains("bundle.json"));
+        std::fs::remove_dir_all(dir).expect("remove incomplete model dir");
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR"]
+    fn april_callback_can_cancel_before_model_inference() {
+        let dir = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to the verified April bundle");
+        let engine = load_text_to_speech_with_options(
+            &dir,
+            PocketLoadOptions {
+                model: PocketModelSelection::English2026_04(PocketPrecision::Fp32),
+                num_threads: 1,
+            },
+        )
+        .expect("load April FP32 bundle");
+        let voice =
+            load_voice_style(&Path::new(&dir).join(format!("{DEFAULT_VOICE}.{VOICE_FILE_EXT}")))
+                .expect("load reference voice");
+
+        let samples = engine
+            .synth_chunk_with_callback(
+                "Cancel before inference.",
+                "en",
+                &voice,
+                1,
+                Some(|_samples: &[f32], _progress: f32| false),
+            )
+            .expect("cancel synthesis");
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR with FP32 and INT8 artifacts"]
+    fn april_precisions_synthesize_non_silent_audio() {
+        let dir = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to the verified April bundle");
+        let voice =
+            load_voice_style(&Path::new(&dir).join(format!("{DEFAULT_VOICE}.{VOICE_FILE_EXT}")))
+                .expect("load reference voice");
+
+        for precision in [PocketPrecision::Fp32, PocketPrecision::Int8] {
+            let engine = load_text_to_speech_with_options(
+                &dir,
+                PocketLoadOptions {
+                    model: PocketModelSelection::English2026_04(precision),
+                    num_threads: 1,
+                },
+            )
+            .expect("load April precision");
+            assert_eq!(
+                engine.model_info().expect("April model info").precision,
+                precision
+            );
+            let samples = engine
+                .synth_chunk("Hello there.", "en", &voice, 1)
+                .expect("synthesize April precision");
+            assert!(!samples.is_empty(), "{precision:?} returned no samples");
+            assert!(
+                samples.iter().any(|sample| sample.abs() > 1e-5),
+                "{precision:?} returned digital silence"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR"]
+    fn april_public_synthesis_handles_text_over_token_limit() {
+        let dir = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to the verified April bundle");
+        let engine = load_text_to_speech_with_options(
+            &dir,
+            PocketLoadOptions {
+                model: PocketModelSelection::English2026_04(PocketPrecision::Fp32),
+                num_threads: 1,
+            },
+        )
+        .expect("load April FP32 bundle");
+        let voice =
+            load_voice_style(&Path::new(&dir).join(format!("{DEFAULT_VOICE}.{VOICE_FILE_EXT}")))
+                .expect("load reference voice");
+        let text = "This deliberately long passage crosses the model token boundary while using \
+                    the public synthesis method directly. It verifies that callers receive one \
+                    continuous sample buffer without needing to duplicate the model tokenizer or \
+                    understand its exact token budget. The runtime must split the prompt safely, \
+                    synthesize every piece, and preserve compatibility with existing callers.";
+
+        let chunks = engine
+            .split_text_into_chunks(text)
+            .expect("split long April prompt");
+        assert!(chunks.len() > 1, "test text must exceed one model chunk");
+
+        let samples = engine
+            .synth_chunk(text, "en", &voice, 1)
+            .expect("synthesize long April prompt");
+        assert!(!samples.is_empty());
+        assert!(samples.iter().any(|sample| sample.abs() > 1e-5));
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_JANUARY_TEST_MODEL_DIR"]
+    fn january_auto_detection_remains_source_compatible() {
+        let dir = std::env::var("BUZZ_POCKET_JANUARY_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_JANUARY_TEST_MODEL_DIR to a January bundle");
+        let engine = load_text_to_speech(&dir).expect("auto-load January bundle");
+        assert!(engine.model_info().is_none());
+        let voice =
+            load_voice_style(&Path::new(&dir).join(format!("{DEFAULT_VOICE}.{VOICE_FILE_EXT}")))
+                .expect("load January reference voice");
+        let samples = engine
+            .synth_chunk("Hello there.", "en", &voice, 1)
+            .expect("synthesize January bundle");
+        assert!(!samples.is_empty());
+        assert!(samples.iter().any(|sample| sample.abs() > 1e-5));
     }
 }
