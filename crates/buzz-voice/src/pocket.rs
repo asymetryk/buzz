@@ -374,10 +374,29 @@ impl PocketTts {
     pub fn synth_chunk(
         &self,
         text: &str,
+        lang: &str,
+        style: &VoiceStyle,
+        steps: usize,
+    ) -> Result<Vec<f32>, String> {
+        self.synth_chunk_with_callback(text, lang, style, steps, None::<fn(&[f32], f32) -> bool>)
+    }
+
+    /// Synthesise `text`, allowing the caller to stop generation early.
+    ///
+    /// The callback receives the samples generated so far and a progress
+    /// value in `[0, 1]`. Return `true` to continue or `false` to cancel.
+    /// Clients that do not need cancellation should use [`Self::synth_chunk`].
+    pub fn synth_chunk_with_callback<F>(
+        &self,
+        text: &str,
         _lang: &str,
         style: &VoiceStyle,
         _steps: usize,
-    ) -> Result<Vec<f32>, String> {
+        callback: Option<F>,
+    ) -> Result<Vec<f32>, String>
+    where
+        F: FnMut(&[f32], f32) -> bool + 'static,
+    {
         // Mirror upstream pocket-tts prompt prep — without this short or
         // unpunctuated inputs can cause the LM's EOS logit to never trip,
         // producing up to 40 s of "monster breathing" garbage on the first
@@ -412,7 +431,7 @@ impl PocketTts {
         // `generate_with_config` generic parameter.
         let audio = self
             .inner
-            .generate_with_config(&prepared.text, &cfg, None::<fn(&[f32], f32) -> bool>)
+            .generate_with_config(&prepared.text, &cfg, callback)
             .ok_or_else(|| {
                 format!(
                     "Pocket TTS synthesis failed for text ({} chars)",
