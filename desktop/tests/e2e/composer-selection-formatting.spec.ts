@@ -243,6 +243,25 @@ for (const format of [
   });
 }
 
+test("Code block uses the restored multiline selection after mouseup collapse", async ({
+  page,
+}) => {
+  await openGeneral(page);
+
+  const input = page.getByTestId("message-input");
+  await input.click();
+  await input.pressSequentially("before");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("selected");
+  await input.press("Shift+Enter");
+  await input.pressSequentially("after");
+  await applySelectionFormat(page, input, "Code block", true);
+
+  await expect(input.locator(":scope > p").first()).toHaveText("before");
+  await expect(input.locator(":scope > pre")).toHaveText("selected");
+  await expect(input.locator(":scope > p").last()).toHaveText("after");
+});
+
 for (const list of [
   { label: "Bullet list", selector: "ul" },
   { label: "Ordered list", selector: "ol" },

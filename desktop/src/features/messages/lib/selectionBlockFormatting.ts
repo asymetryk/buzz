@@ -310,10 +310,7 @@ export function mergeSelectedTextblocksIntoCodeBlock(
   transaction: Transaction,
 ): boolean {
   if (!(transaction.selection instanceof TextSelection)) return false;
-  if (transaction.selection.empty) {
-    isolateCaretLineForBlockFormatting(transaction);
-    return false;
-  }
+  if (transaction.selection.empty) return false;
 
   const blocks = selectedTextblocks(transaction);
   const codeBlock = transaction.doc.type.schema.nodes.codeBlock;

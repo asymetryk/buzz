@@ -203,29 +203,26 @@ export const FormattingToolbar = React.memo(function FormattingToolbar({
   const toggleCodeBlock = React.useCallback(() => {
     const chain = formattingChain();
     if (!chain) return;
-    if (editor?.state.selection.empty) {
-      chain
-        .command(({ tr }) => {
+    chain
+      .command(({ tr, chain: currentChain }) => {
+        if (tr.selection.empty) {
           isolateSelectionForBlockFormatting(tr);
-          return true;
-        })
-        .toggleCodeBlock()
-        .run();
-      return;
-    }
+          return currentChain().toggleCodeBlock().run();
+        }
 
-    let conversion = chain.command(({ tr }) => {
-      isolateSelectionForBlockFormatting(tr);
-      return true;
-    });
-    conversion = conversion.command(({ tr, chain: currentChain }) => {
-      if (!selectionIncludesList(tr)) return true;
-      return currentChain().liftListItem("listItem").run();
-    });
-    conversion
-      .command(({ tr }) => mergeSelectedTextblocksIntoCodeBlock(tr))
+        isolateSelectionForBlockFormatting(tr);
+        if (selectionIncludesList(tr)) {
+          return currentChain()
+            .liftListItem("listItem")
+            .command(({ tr: currentTransaction }) =>
+              mergeSelectedTextblocksIntoCodeBlock(currentTransaction),
+            )
+            .run();
+        }
+        return mergeSelectedTextblocksIntoCodeBlock(tr);
+      })
       .run();
-  }, [editor, formattingChain]);
+  }, [formattingChain]);
 
   const restorePendingSelection = React.useCallback(() => {
     formattingChain()?.run();
