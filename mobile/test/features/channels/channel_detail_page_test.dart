@@ -920,6 +920,67 @@ void main() {
       expect(findRichText('Newest live update'), findsOneWidget);
     });
 
+    testWidgets(
+      'keeps a deep-linked message in view when its page arrives after a '
+      'small scroll near the latest message',
+      (tester) async {
+        tester.view.physicalSize = const Size(400, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+
+        // The deep-link target lives in an older page that has not loaded yet.
+        final messagesNotifier = _FakeMessagesNotifier([
+          for (var i = 30; i < 60; i++)
+            _textMsg(
+              id: 'msg$i',
+              pubkey: 'alice',
+              content: 'Message $i',
+              createdAt: 1000 + i * 1000,
+            ),
+        ]);
+
+        await tester.pumpWidget(
+          _buildTestable(
+            messages: const [],
+            messagesNotifier: messagesNotifier,
+            initialMessageId: 'msg3',
+            users: const {
+              'alice': UserProfile(pubkey: 'alice', displayName: 'Alice'),
+            },
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        // Small scrolls that keep the newest message visible, so isAtLatest
+        // stays true while the scroll offset becomes non-zero. This lets a
+        // later programmatic jumpTo dispatch ScrollEndNotification.
+        for (final dy in const [10.0, 20.0, 30.0]) {
+          await tester.drag(
+            find.byKey(const ValueKey('channel-message-list')),
+            Offset(0, dy),
+          );
+          await tester.pumpAndSettle();
+        }
+
+        // The older page containing the deep-link target arrives.
+        messagesNotifier.setMessages([
+          for (var i = 0; i < 60; i++)
+            _textMsg(
+              id: 'msg$i',
+              pubkey: 'alice',
+              content: 'Message $i',
+              createdAt: 1000 + i * 1000,
+            ),
+        ]);
+        await tester.pumpAndSettle();
+
+        // The deep-link jump must stick rather than snapping back to newest.
+        expect(findRichText('Message 3'), findsOneWidget);
+        expect(findRichText('Message 59'), findsNothing);
+      },
+    );
+
     testWidgets('groups consecutive messages from same author', (tester) async {
       final messages = [
         _textMsg(
