@@ -91,15 +91,8 @@ const TTS_FILE_HASHES: &[(&str, &str)] = &[
 /// honest (each version tag identifies one specific set of model bytes).
 const STT_MODEL_VERSION: &str = "2";
 
-/// Model manifest version for Pocket TTS. Increment when upgrading model files.
-/// Bumped "1" → "2" when the bundled reference voice changed from KevinAHM's
-/// anonymous 16 kHz sample to Mary (VCTK p333, 32 kHz, ai-coustics-enhanced)
-/// from kyutai/tts-voices. The hash mismatch on `reference_sample.wav` would
-/// fail readiness on its own, but the manifest bump makes the re-download
-/// reason explicit and skips the failing-then-re-fetching transient state.
-/// Bumped "2" → "3" for the int8 → fp32 January model swap.
-/// Bumped "3" → "4" for the April bundle. Existing January installs stay
-/// usable until the fully verified April directory is atomically installed.
+/// Identifies the exact Pocket TTS asset set expected by readiness checks.
+/// A mismatch triggers a fresh download and atomic installation.
 const TTS_MODEL_VERSION: &str = "4";
 
 /// Filename for the version manifest written alongside model files.
@@ -453,19 +446,30 @@ impl ModelSlot {
         self.just_ready.swap(false, Ordering::AcqRel)
     }
 
-    /// Restore the previous verified directory if the process stopped between
-    /// the backup and install renames. This makes an interrupted model upgrade
-    /// deterministic and preserves the still-usable January cache.
+    /// Restore the verified backup when an interrupted install leaves the
+    /// destination absent or incomplete.
     fn recover_interrupted_install(&self, models_dir: &Path) {
         let final_dir = self.model_dir(models_dir);
         let backup_dir = final_dir.with_extension("old");
-        if !final_dir.exists() && backup_dir.exists() {
-            if let Err(error) = std::fs::rename(&backup_dir, &final_dir) {
+        if !backup_dir.exists() || self.is_ready(models_dir) {
+            return;
+        }
+
+        if final_dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&final_dir) {
                 eprintln!(
-                    "buzz-desktop: could not restore interrupted {} install: {error}",
+                    "buzz-desktop: could not remove incomplete {} install: {error}",
                     self.dir_name
                 );
+                return;
             }
+        }
+
+        if let Err(error) = std::fs::rename(&backup_dir, &final_dir) {
+            eprintln!(
+                "buzz-desktop: could not restore interrupted {} install: {error}",
+                self.dir_name
+            );
         }
     }
 
@@ -582,8 +586,7 @@ impl ModelManager {
             stt: ModelSlot::new(STT_MODEL_DIR_NAME, STT_EXPECTED_FILES, STT_MODEL_VERSION),
             tts: ModelSlot::new(TTS_MODEL_DIR_NAME, TTS_EXPECTED_FILES, TTS_MODEL_VERSION),
         };
-        // Preserve the working January cache if the April swap was interrupted
-        // between its backup and install renames.
+        // Keep the last complete cache usable after an interrupted atomic swap.
         manager.tts.recover_interrupted_install(&manager.models_dir);
         Some(manager)
     }
@@ -988,6 +991,27 @@ mod tests {
                 .expect("restored sentinel"),
             b"january"
         );
+        assert!(!backup_dir.exists());
+    }
+
+    #[test]
+    fn interrupted_install_replaces_incomplete_destination_with_backup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let slot = ModelSlot::new(TTS_MODEL_DIR_NAME, TTS_EXPECTED_FILES, TTS_MODEL_VERSION);
+        let model_dir = temp.path().join(TTS_MODEL_DIR_NAME);
+        let backup_dir = temp.path().join("pocket-tts.old");
+        std::fs::create_dir_all(&model_dir).expect("create incomplete destination");
+        std::fs::write(model_dir.join("incomplete"), b"april").expect("write incomplete file");
+        std::fs::create_dir_all(&backup_dir).expect("create backup");
+        std::fs::write(backup_dir.join("sentinel"), b"january").expect("write sentinel");
+
+        slot.recover_interrupted_install(temp.path());
+
+        assert_eq!(
+            std::fs::read(model_dir.join("sentinel")).expect("restored sentinel"),
+            b"january"
+        );
+        assert!(!model_dir.join("incomplete").exists());
         assert!(!backup_dir.exists());
     }
 }

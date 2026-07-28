@@ -133,9 +133,8 @@ pub(crate) struct PreparedPrompt {
 /// 3. Append `.` when the last character is alphanumeric.
 /// 4. Use the model's word-count-based post-EOS frame heuristic.
 ///
-/// Unlike the January bundle, `english_2026-04` explicitly sets
-/// `pad_with_spaces_for_short_inputs` to false. Keeping that old eight-space
-/// prefix would change the very phrase beginnings this model upgrade targets.
+/// The bundle disables short-input space padding; prompts must stay unpadded
+/// so phrase starts match the model's expected input distribution.
 ///
 /// Returns `None` only if the input is empty after trimming — caller should
 /// skip synthesis in that case.
@@ -262,7 +261,7 @@ mod tests {
 
     #[test]
     fn prepare_prompt_threshold_is_inclusive_at_four_words() {
-        // April changes only the post-EOS heuristic at the four-word boundary.
+        // Only the post-EOS heuristic changes at the four-word boundary.
         let four = prepare_pocket_prompt("one two three four").expect("non-empty");
         assert_eq!(four.text, "One two three four.");
         assert_eq!(four.frames_after_eos, 5);

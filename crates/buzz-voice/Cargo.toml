@@ -13,7 +13,6 @@ static = ["sherpa-onnx/static"]
 shared = ["sherpa-onnx/shared"]
 
 [dependencies]
-ndarray = "0.17"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-24", "ndarray", "std"] }
 ort-sys = { version = "=2.0.0-rc.12", features = ["disable-linking"] }
 rand = { workspace = true }

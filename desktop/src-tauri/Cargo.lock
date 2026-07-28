@@ -1174,7 +1174,6 @@ dependencies = [
 name = "buzz-voice"
 version = "0.1.0"
 dependencies = [
- "ndarray",
  "ort",
  "ort-sys",
  "rand 0.10.2",
