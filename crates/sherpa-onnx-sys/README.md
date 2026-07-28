@@ -4,8 +4,8 @@
 
 </div>
 
-Buzz carries this source-identical crates.io package so its build script can
-link the official merged iOS archives and Android shared libraries through
+Buzz carries the crates.io 1.13.4 FFI sources and locally patches the build
+script to link caller-supplied official iOS and Android libraries through
 `SHERPA_ONNX_LIB_DIR`. Desktop archive selection remains unchanged.
 
  ### Supported functions

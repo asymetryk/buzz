@@ -425,10 +425,6 @@ impl PocketTts {
             ..Default::default()
         };
 
-        // No progress callback — synthesis is fast enough that returning the
-        // whole buffer at once keeps the lookahead pipelining in `tts.rs`
-        // simple. `None::<fn(...) -> bool>` pins the callback type for the
-        // `generate_with_config` generic parameter.
         let audio = self
             .inner
             .generate_with_config(&prepared.text, &cfg, callback)
