@@ -27,6 +27,7 @@ members = [
     "crates/buzz-relay-mesh",
     "crates/buzz-dev-mcp",
     "crates/buzz-voice",
+    "crates/sherpa-onnx-sys",
     "examples/countdown-bot",
 ]
 exclude = ["desktop/src-tauri"]
@@ -171,3 +172,4 @@ strip = true
 # allowlist for the auth token). Revert to crates.io once #449 lands upstream.
 [patch.crates-io]
 aws-creds = { git = "https://github.com/tlongwell-block/rust-s3", rev = "c9fce3620dd434c1f810101d672cf384268dbb0f" }
+sherpa-onnx-sys = { path = "crates/sherpa-onnx-sys" }
