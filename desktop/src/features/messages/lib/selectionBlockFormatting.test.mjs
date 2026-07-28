@@ -5,7 +5,10 @@ import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { EditorState, TextSelection } from "@tiptap/pm/state";
 
-import { isolateSelectionForBlockFormatting } from "./selectionBlockFormatting.ts";
+import {
+  isolateSelectionForBlockFormatting,
+  mergeSelectedTextblocksIntoCodeBlock,
+} from "./selectionBlockFormatting.ts";
 
 // Matching useRichTextEditor's StarterKit configuration (minus things
 // irrelevant to block isolation).
@@ -98,6 +101,32 @@ test("caret in a single-line paragraph is a no-op", () => {
   const transaction = state.tr;
   assert.equal(isolateSelectionForBlockFormatting(transaction), false);
   assert.equal(transaction.steps.length, 0);
+});
+
+test("exact block-boundary selection excludes endpoint paragraphs", () => {
+  const documentNode = doc(para(t("alpha")), para(t("beta")), para(t("gamma")));
+  for (const backward of [false, true]) {
+    const state = EditorState.create({
+      doc: documentNode,
+      selection: TextSelection.create(
+        documentNode,
+        backward ? 14 : 6,
+        backward ? 6 : 14,
+      ),
+    });
+    const transaction = state.tr;
+    isolateSelectionForBlockFormatting(transaction);
+    assert.equal(mergeSelectedTextblocksIntoCodeBlock(transaction), true);
+    const next = state.apply(transaction);
+    assert.deepEqual(
+      next.doc.toJSON(),
+      doc(
+        para(t("alpha")),
+        schema.nodes.codeBlock.create(null, t("beta")),
+        para(t("gamma")),
+      ).toJSON(),
+    );
+  }
 });
 
 test("selection isolation still splits around the selected text", () => {

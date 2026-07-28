@@ -92,6 +92,38 @@ function isolateCaretLineForBlockFormatting(transaction: Transaction): boolean {
   return true;
 }
 
+function normalizeSelectionBlockBoundaries(transaction: Transaction): boolean {
+  const selection = transaction.selection;
+  if (!(selection instanceof TextSelection) || selection.empty) return false;
+
+  const isBackward = selection.anchor > selection.head;
+  let { from, to } = selection;
+  if (
+    selection.$from.parent.isTextblock &&
+    selection.$from.parentOffset === selection.$from.parent.content.size &&
+    selection.$from.depth > 0
+  ) {
+    from = selection.$from.after();
+  }
+  if (
+    selection.$to.parent.isTextblock &&
+    selection.$to.parentOffset === 0 &&
+    selection.$to.depth > 0
+  ) {
+    to = selection.$to.before();
+  }
+  if (from >= to) return false;
+
+  transaction.setSelection(
+    TextSelection.create(
+      transaction.doc,
+      isBackward ? to : from,
+      isBackward ? from : to,
+    ),
+  );
+  return from !== selection.from || to !== selection.to;
+}
+
 /**
  * Isolate the current text selection at exact block boundaries.
  *
@@ -116,6 +148,7 @@ export function isolateSelectionForBlockFormatting(
     return isolateCaretLineForBlockFormatting(transaction);
   }
 
+  normalizeSelectionBlockBoundaries(transaction);
   const isBackward = transaction.selection.anchor > transaction.selection.head;
   let { from, to } = transaction.selection;
 
@@ -192,17 +225,13 @@ function selectedTextblocks(
 ): Array<{ node: ProseMirrorNode; position: number }> {
   const blocks: Array<{ node: ProseMirrorNode; position: number }> = [];
   const { from, to } = transaction.selection;
-  transaction.doc.nodesBetween(
-    Math.max(0, from - 1),
-    Math.min(transaction.doc.content.size, to + 1),
-    (node, position) => {
-      if (node.isTextblock) {
-        blocks.push({ node, position });
-        return false;
-      }
-      return true;
-    },
-  );
+  transaction.doc.nodesBetween(from, to, (node, position) => {
+    if (node.isTextblock) {
+      blocks.push({ node, position });
+      return false;
+    }
+    return true;
+  });
   return blocks;
 }
 
