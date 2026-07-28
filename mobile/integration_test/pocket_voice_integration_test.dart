@@ -44,6 +44,7 @@ void main() {
       addTearDown(worker.dispose);
 
       final firstClock = Stopwatch()..start();
+      final firstPlaybackClock = Stopwatch()..start();
       worker.synthesize(1, 'Pocket voice is running on this mobile device.');
       final first = await worker.responses
           .where((response) => response is PocketWorkerAudio)
@@ -59,11 +60,16 @@ void main() {
           Duration.microsecondsPerSecond /
           audioSeconds;
       final output = PlatformVoiceAudioOutput();
+      final playbackStarted = output.events.firstWhere(
+        (event) => event == VoiceAudioEvent.started,
+      );
       final playbackCompleted = output.events.firstWhere(
         (event) => event == VoiceAudioEvent.completed,
       );
       final playbackClock = Stopwatch()..start();
       await output.play(bytes, first.sampleRate);
+      await playbackStarted.timeout(const Duration(seconds: 30));
+      firstPlaybackClock.stop();
       await playbackCompleted.timeout(const Duration(seconds: 30));
       playbackClock.stop();
       expect(
@@ -105,6 +111,7 @@ void main() {
       debugPrint(
         'BUZZ_POCKET_METRICS '
         'first_pcm_ms=${firstClock.elapsedMilliseconds} '
+        'ttfap_ms=${firstPlaybackClock.elapsedMilliseconds} '
         'synthesis_ms=${first.synthesisTime.inMilliseconds} '
         'audio_s=${audioSeconds.toStringAsFixed(3)} '
         'rtf=${rtf.toStringAsFixed(3)} '

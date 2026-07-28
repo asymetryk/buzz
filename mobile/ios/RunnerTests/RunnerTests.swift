@@ -25,7 +25,9 @@ class RunnerTests: XCTestCase {
     }
 
     let loadStart = ContinuousClock.now
-    let engineResult = modelPath.withCString(buzz_voice_engine_create)
+    let engineResult = modelPath.withCString {
+      buzz_voice_engine_create($0, UInt8(BUZZ_VOICE_PRECISION_FP32))
+    }
     let loadTime = loadStart.duration(to: .now)
     if let error = engineResult.error {
       defer { buzz_voice_string_free(error) }

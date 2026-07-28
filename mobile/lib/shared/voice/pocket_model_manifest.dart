@@ -15,12 +15,17 @@ class PocketModelArtifact {
   });
 }
 
-const pocketModelVersion = '3';
-const pocketModelRuntimeBytes = 473251634;
+const pocketModelVersion = '4';
+const pocketModelRevision = '58a6d00cf13d239b6748cb0769f35c580a8f606c';
+const pocketModelPrecision = 'fp32';
+const pocketModelCoreBytes = 439555904;
+const pocketModelRuntimeBytes = 440213643;
 const _pocketModelBase =
-    'https://huggingface.co/csukuangfj2/'
-    'sherpa-onnx-pocket-tts-2026-01-26/resolve/'
-    '96d1e53ce3311ca6c2c6a35e2062d36b4cec6fa3';
+    'https://huggingface.co/KevinAHM/pocket-tts-onnx/resolve/'
+    '$pocketModelRevision/onnx/english_2026-04';
+const _pocketLicenseUrl =
+    'https://huggingface.co/KevinAHM/pocket-tts-onnx/resolve/'
+    '$pocketModelRevision/onnx/LICENSE';
 const _pocketVoiceUrl =
     'https://huggingface.co/kyutai/tts-voices/resolve/'
     '323332d33f997de8394f24a193e1a76df720e01a/'
@@ -28,39 +33,44 @@ const _pocketVoiceUrl =
 
 final pocketModelArtifacts = <PocketModelArtifact>[
   _artifact(
-    'decoder.onnx',
-    41478706,
-    'f267880fde6c58b17b0a8f3647eaf8dcfad321f833f32d583ebc2fb2d1a15f10',
+    'bundle.json',
+    24381,
+    'bab643150f437f37df080a710520ff39ed9ebd9a339f8ebdc739f7eddfc28b3f',
   ),
   _artifact(
-    'encoder.onnx',
-    72713165,
-    'e8f2f6d301ffb96e398b138a7dc6d3038622d236044636b73d920bab85890260',
+    'bos_before_voice.npy',
+    4224,
+    'f46edf4f7007b7ba4ea58831f49d003e59e167b4641c44bb3addfe9231a780b1',
   ),
   _artifact(
-    'lm_flow.onnx',
-    39097094,
-    '79c013a554a54e63319c33c0cc8830cbbedc9b7e448ae7e26f7923ae11f9873e',
+    'tokenizer.model',
+    59339,
+    'd461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6',
   ),
   _artifact(
-    'lm_main.onnx',
-    302742148,
-    '255d1a9263c5abdf36034abfc19c11d21cc5f40f0f87d8361288e972cbd5c578',
+    'flow_lm_main.onnx',
+    302742149,
+    '6d18315e2c33ca3e3aa4a4e3dca22f56d007fd823127e24948b37695bf54190f',
+  ),
+  _artifact(
+    'flow_lm_flow.onnx',
+    39097095,
+    '085d239f68897e28fb06e95c743738ad8b8c092ee6dc55f5491313e81ff08062',
+  ),
+  _artifact(
+    'mimi_decoder.onnx',
+    41471926,
+    '86f038caa02a96a0ff9c25526a0ff43a4906c418197ed72d3e30f720ac7ce802',
+  ),
+  _artifact(
+    'mimi_encoder.onnx',
+    39768446,
+    '853e2ca623b8782d94c3745ec6133bfdff7ce33d9b11128bd29ea03f28d76e3d',
   ),
   _artifact(
     'text_conditioner.onnx',
-    16388343,
-    '0b84e837d7bfaf2c896627b03e3f080320309f37f4fc7df7698c644f7ba5e6b1',
-  ),
-  _artifact(
-    'vocab.json',
-    69478,
-    '6fb646346cf931016f70c4921aab0900ce7a304b893cb02135c74e294abfea01',
-  ),
-  _artifact(
-    'token_scores.json',
-    123616,
-    '5be2f278caf9b9800741f0fd82bff677f4943ec764c356f907213434b622d958',
+    16388344,
+    '4ecee995fb69f85c7a7493d11f7b5ee15d9950facc7ab3f5c9c49ef1e03847bb',
   ),
   PocketModelArtifact(
     name: 'reference_sample.wav',
@@ -68,10 +78,11 @@ final pocketModelArtifacts = <PocketModelArtifact>[
     size: 639084,
     sha256: 'a35b0468382218e9f37a9a7494d1e4b74deaf18d7ced22265b4e325bb55c183f',
   ),
-  _artifact(
-    'LICENSE',
-    18655,
-    'fe7b4ce83b8381cc5b216bbb4af73c570688d1b819c73bbaed8ca401f4677cd6',
+  PocketModelArtifact(
+    name: 'LICENSE',
+    url: Uri.parse(_pocketLicenseUrl),
+    size: 18655,
+    sha256: 'fe7b4ce83b8381cc5b216bbb4af73c570688d1b819c73bbaed8ca401f4677cd6',
   ),
 ];
 
@@ -94,9 +105,10 @@ Original model by Kyutai: https://huggingface.co/kyutai/pocket-tts
 Paper: Charles, Roebel, et al., Pocket TTS (arXiv:2509.06926).
 Mimi neural codec by Kyutai is bundled as part of the model.
 
-ONNX export by KevinAHM: https://huggingface.co/KevinAHM/pocket-tts-onnx
-Sherpa-onnx repackage by csukuangfj / k2-fsa:
-https://huggingface.co/csukuangfj2/sherpa-onnx-pocket-tts-2026-01-26
+April 2026 ONNX export by KevinAHM:
+https://huggingface.co/KevinAHM/pocket-tts-onnx
+Pinned revision: 58a6d00cf13d239b6748cb0769f35c580a8f606c
+Bundle: english_2026-04, full-precision graphs.
 
 Bundled reference voice (reference_sample.wav):
 "Mary (f, conversation)" preset from the Kyutai TTS demo voice catalogue

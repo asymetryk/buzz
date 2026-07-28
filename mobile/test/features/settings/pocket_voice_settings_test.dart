@@ -52,8 +52,8 @@ void main() {
 
     expect(find.text('Pocket voice'), findsOneWidget);
     expect(find.text('Not downloaded'), findsOneWidget);
-    expect(find.textContaining('Downloads 473 MB'), findsOneWidget);
-    expect(find.text('473 MB'), findsOneWidget);
+    expect(find.textContaining('Downloads 440 MB'), findsOneWidget);
+    expect(find.text('440 MB'), findsOneWidget);
 
     // Flutter's text rasterization differs between macOS and the Linux CI
     // runner even with the same bundled fonts. Keep the pixel baseline on the

@@ -2,7 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
-enum VoiceAudioEvent { completed, interrupted, routeLost, backgrounded, error }
+enum VoiceAudioEvent {
+  started,
+  completed,
+  interrupted,
+  routeLost,
+  backgrounded,
+  error,
+}
 
 abstract interface class VoiceAudioOutput {
   Stream<VoiceAudioEvent> get events;
@@ -18,6 +25,7 @@ class PlatformVoiceAudioOutput implements VoiceAudioOutput {
   PlatformVoiceAudioOutput() {
     _channel.setMethodCallHandler((call) async {
       final event = switch (call.method) {
+        'started' => VoiceAudioEvent.started,
         'completed' => VoiceAudioEvent.completed,
         'interrupted' => VoiceAudioEvent.interrupted,
         'routeLost' => VoiceAudioEvent.routeLost,

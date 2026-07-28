@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:buzz/shared/voice/pocket_model_downloader.dart';
@@ -38,6 +39,9 @@ void main() {
         client: MockClient((_) async => http.Response('hello', 200)),
         excludeFromBackup: excluded.add,
       );
+      final legacy = Directory('${temporary.path}/buzz/models/pocket-tts/v3');
+      await legacy.create(recursive: true);
+      await File('${legacy.path}/sentinel').writeAsString('January');
 
       final directory = await downloader.install(
         (downloaded, total, file) => progress.add((downloaded, total, file)),
@@ -45,7 +49,18 @@ void main() {
 
       expect(await downloader.verify(directory, hashContents: true), isTrue);
       expect(await File('${directory.path}/tiny.bin').readAsString(), 'hello');
+      final manifest =
+          jsonDecode(
+                await File(
+                  '${directory.path}/.buzz-model-manifest',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      expect(manifest['version'], pocketModelVersion);
+      expect(manifest['revision'], pocketModelRevision);
+      expect(manifest['precision'], pocketModelPrecision);
       expect(progress.last, (5, 5, 'tiny.bin'));
+      expect(await legacy.exists(), isFalse);
       expect(excluded, hasLength(2));
       expect(
         excluded.first,
@@ -63,6 +78,9 @@ void main() {
   );
 
   test('rejects a checksum mismatch without replacing an install', () async {
+    final legacy = Directory('${temporary.path}/buzz/models/pocket-tts/v3');
+    await legacy.create(recursive: true);
+    await File('${legacy.path}/sentinel').writeAsString('January');
     final downloader = _downloader(
       temporary,
       artifact,
@@ -78,12 +96,7 @@ void main() {
       await downloader.modelDirectory().then((dir) => dir.exists()),
       isFalse,
     );
-    expect(
-      await Directory(
-        '${temporary.path}/buzz/models/pocket-tts',
-      ).list().isEmpty,
-      isTrue,
-    );
+    expect(await File('${legacy.path}/sentinel').readAsString(), 'January');
   });
 
   test('fails before download when the model and reserve do not fit', () async {
@@ -122,7 +135,9 @@ void main() {
 
   test('recovers an old install left by an interrupted atomic swap', () async {
     final parent = Directory('${temporary.path}/buzz/models/pocket-tts');
-    final backup = Directory('${parent.path}/.pocket-tts-v3.old-crash');
+    final backup = Directory(
+      '${parent.path}/.pocket-tts-v$pocketModelVersion.old-crash',
+    );
     await backup.create(recursive: true);
     await File('${backup.path}/sentinel').writeAsString('previous install');
     final client = _PendingClient();
@@ -180,21 +195,36 @@ void main() {
     expect(nextClient, 2);
   });
 
-  test('license attribution stays identical to the desktop canonical text', () {
-    final current = Directory.current;
-    final repository = current.path.endsWith('${Platform.pathSeparator}mobile')
-        ? current.parent
-        : current;
-    final desktopModels = File(
-      '${repository.path}/desktop/src-tauri/src/huddle/models.rs',
-    ).readAsStringSync();
-    final match = RegExp(
-      r'const TTS_LICENSE_TEXT: &str = "\\\n([\s\S]*?)\n";',
-    ).firstMatch(desktopModels);
-
-    expect(match, isNotNull);
-    final canonical = '${match!.group(1)!.replaceAll(r'\"', '"')}\n';
-    expect(pocketModelLicenseText, canonical);
+  test('April FP32 manifest matches the frozen shared runtime metadata', () {
+    expect(pocketModelVersion, '4');
+    expect(pocketModelRevision, '58a6d00cf13d239b6748cb0769f35c580a8f606c');
+    expect(pocketModelPrecision, 'fp32');
+    expect(
+      pocketModelArtifacts
+          .where((artifact) => artifact.name != 'reference_sample.wav')
+          .where((artifact) => artifact.name != 'LICENSE')
+          .fold(0, (total, artifact) => total + artifact.size),
+      pocketModelCoreBytes,
+    );
+    expect(
+      pocketModelArtifacts.fold(0, (total, artifact) => total + artifact.size),
+      pocketModelRuntimeBytes,
+    );
+    expect(
+      pocketModelArtifacts.map((artifact) => artifact.name),
+      containsAll([
+        'bundle.json',
+        'bos_before_voice.npy',
+        'tokenizer.model',
+        'flow_lm_main.onnx',
+        'flow_lm_flow.onnx',
+        'mimi_decoder.onnx',
+        'mimi_encoder.onnx',
+        'text_conditioner.onnx',
+      ]),
+    );
+    expect(pocketModelLicenseText, contains('April 2026 ONNX export'));
+    expect(pocketModelLicenseText, contains(pocketModelRevision));
   });
 }
 

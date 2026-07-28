@@ -482,6 +482,8 @@ void main() {
       expect(find.text('Forum threads are not on mobile yet'), findsNothing);
       // The compose bar for stream messages should not appear.
       expect(find.text('Message…'), findsNothing);
+      // Forum posts are not part of the channel-level voice conversation.
+      expect(find.byTooltip('Start Pocket voice'), findsNothing);
     });
 
     testWidgets('renders video attachments from imeta tags in the timeline', (

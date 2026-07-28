@@ -94,6 +94,7 @@ final class VoiceAudioOutput: NSObject, AVAudioPlayerDelegate {
         )
       }
       player = nextPlayer
+      channel.invokeMethod("started", arguments: nil)
     } catch {
       try? session.setActive(false, options: [.notifyOthersOnDeactivation])
       throw error

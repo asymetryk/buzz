@@ -29,6 +29,16 @@ void main() {
     expect(output.played, hasLength(1));
     expect(output.played[0].$1, [1, 2]);
     expect(output.played[0].$2, 24000);
+    expect(
+      container.read(pocketVoiceProvider).phase,
+      PocketVoicePhase.synthesizing,
+    );
+    output.started();
+    await _flush();
+    expect(
+      container.read(pocketVoiceProvider).phase,
+      PocketVoicePhase.speaking,
+    );
 
     worker.emitAudio(1, [3, 4], isLast: true);
     await _flush();
@@ -156,6 +166,7 @@ void main() {
 
     final state = container.read(pocketVoiceProvider);
     expect(state.phase, PocketVoicePhase.error);
+    expect(state.failureKind, PocketVoiceFailureKind.playback);
     expect(state.error, 'Pocket voice playback failed.');
     expect(worker.cancelCount, greaterThan(0));
 
@@ -163,6 +174,28 @@ void main() {
     await _flush();
     expect(worker.syntheses, [(1, 'Response.')]);
     expect(container.read(pocketVoiceProvider), same(state));
+  });
+
+  test('classifies synthesis failures for platform fallback routing', () async {
+    final worker = _FakeWorker();
+    final output = _FakeAudioOutput();
+    final container = _container(worker, output);
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+
+    await notifier.enable('conversation');
+    notifier.speak('conversation', 'Response.');
+    worker.emitFailure(
+      1,
+      PocketWorkerFailureKind.synthesis,
+      'Pocket synthesis failed.',
+    );
+    await _flush();
+
+    final state = container.read(pocketVoiceProvider);
+    expect(state.phase, PocketVoicePhase.error);
+    expect(state.failureKind, PocketVoiceFailureKind.synthesis);
+    expect(state.error, 'Pocket synthesis failed.');
   });
 }
 
@@ -237,6 +270,14 @@ class _FakeWorker extends PocketVoiceWorker {
     );
   }
 
+  void emitFailure(
+    int generation,
+    PocketWorkerFailureKind kind,
+    String message,
+  ) {
+    _controller.add(PocketWorkerFailure(kind, message, generation: generation));
+  }
+
   @override
   void cancel() {
     cancelCount += 1;
@@ -273,6 +314,8 @@ class _FakeAudioOutput implements VoiceAudioOutput {
   }
 
   void complete() => _controller.add(VoiceAudioEvent.completed);
+
+  void started() => _controller.add(VoiceAudioEvent.started);
 
   void fail() => _controller.add(VoiceAudioEvent.error);
 

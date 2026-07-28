@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 import 'pocket_model_manifest.dart';
 
 const _manifestName = '.buzz-model-manifest';
+const _legacyPocketModelVersion = '3';
 const _storageChannel = MethodChannel('buzz/voice_audio');
 const _minimumReserveBytes = 64 * 1024 * 1024;
 const _defaultSendTimeout = Duration(seconds: 30);
@@ -85,7 +86,11 @@ class PocketModelDownloader {
 
   Future<bool> isReady() async {
     final directory = await modelDirectory();
-    return verify(directory, hashContents: false);
+    final ready = await verify(directory, hashContents: false);
+    if (ready) {
+      await _cleanupLegacyVersion(directory.parent);
+    }
+    return ready;
   }
 
   Future<bool> verify(Directory directory, {required bool hashContents}) async {
@@ -95,6 +100,8 @@ class PocketModelDownloader {
       final decoded =
           jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
       if (decoded['version'] != pocketModelVersion ||
+          decoded['revision'] != pocketModelRevision ||
+          decoded['precision'] != pocketModelPrecision ||
           decoded['complete'] != true) {
         return false;
       }
@@ -154,6 +161,8 @@ class PocketModelDownloader {
       await File('${staging.path}/$_manifestName').writeAsString(
         jsonEncode({
           'version': pocketModelVersion,
+          'revision': pocketModelRevision,
+          'precision': pocketModelPrecision,
           'complete': true,
           'artifacts': [
             for (final artifact in _artifacts)
@@ -190,6 +199,7 @@ class PocketModelDownloader {
         await backup.delete(recursive: true);
       }
       await excludeFromBackup(finalDirectory.path);
+      await _cleanupLegacyVersion(parent);
       return finalDirectory;
     } on PocketDownloadCancelled {
       rethrow;
@@ -336,6 +346,18 @@ class PocketModelDownloader {
     }
     for (final backup in backups) {
       if (await backup.exists()) await backup.delete(recursive: true);
+    }
+  }
+
+  Future<void> _cleanupLegacyVersion(Directory parent) async {
+    final legacy = Directory('${parent.path}/v$_legacyPocketModelVersion');
+    try {
+      if (await legacy.exists()) {
+        await legacy.delete(recursive: true);
+      }
+    } on FileSystemException {
+      // The verified v4 model remains usable. A later readiness check retries
+      // cleanup instead of turning a successful upgrade into an error state.
     }
   }
 

@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use buzz_voice::pocket::{
-    load_text_to_speech, load_voice_style, PocketTts, VoiceStyle, DEFAULT_VOICE, SAMPLE_RATE,
-    VOICE_FILE_EXT,
+    load_text_to_speech_with_options, load_voice_style, PocketLoadOptions, PocketModelSelection,
+    PocketPrecision, PocketTts, VoiceStyle, DEFAULT_VOICE, SAMPLE_RATE, VOICE_FILE_EXT,
 };
 use buzz_voice::preparation::{prepare_tts_chunks, shape_tts_chunk};
 
@@ -80,15 +80,27 @@ fn input_string(value: *const c_char, label: &str) -> Result<String, String> {
 
 /// Create and retain one Pocket engine and its reference voice.
 #[no_mangle]
-pub extern "C" fn buzz_voice_engine_create(model_dir: *const c_char) -> BuzzVoiceEngineResult {
+pub extern "C" fn buzz_voice_engine_create(
+    model_dir: *const c_char,
+    precision: u8,
+) -> BuzzVoiceEngineResult {
     let model_dir = match input_string(model_dir, "model_dir") {
         Ok(value) => value,
         Err(error) => return engine_error(error),
     };
+    let precision = match precision {
+        value if value == PocketPrecision::Fp32 as u8 => PocketPrecision::Fp32,
+        value if value == PocketPrecision::Int8 as u8 => PocketPrecision::Int8,
+        value => return engine_error(format!("unsupported Pocket precision: {value}")),
+    };
     let voice_path = std::path::Path::new(&model_dir)
         .join(DEFAULT_VOICE)
         .with_extension(VOICE_FILE_EXT);
-    let tts = match load_text_to_speech(&model_dir) {
+    let options = PocketLoadOptions {
+        model: PocketModelSelection::English2026_04(precision),
+        ..PocketLoadOptions::default()
+    };
+    let tts = match load_text_to_speech_with_options(&model_dir, options) {
         Ok(value) => value,
         Err(error) => return engine_error(error),
     };
@@ -166,12 +178,28 @@ pub extern "C" fn buzz_voice_engine_synthesize(
 /// The returned pointer is released with [`buzz_voice_string_free`]. A null
 /// pointer indicates invalid input or an unexpected serialization failure.
 #[no_mangle]
-pub extern "C" fn buzz_voice_prepare_chunks_json(text: *const c_char) -> *mut c_char {
+pub extern "C" fn buzz_voice_prepare_chunks_json(
+    engine: *mut c_void,
+    text: *const c_char,
+) -> *mut c_char {
+    if engine.is_null() {
+        return ptr::null_mut();
+    }
     let text = match input_string(text, "text") {
         Ok(value) => value,
         Err(_) => return ptr::null_mut(),
     };
-    let json = match serde_json::to_string(&prepare_tts_chunks(&text)) {
+    // SAFETY: See `buzz_voice_engine_synthesize`.
+    let engine = unsafe { &*(engine.cast::<Engine>()) };
+    let mut chunks = Vec::new();
+    for prepared in prepare_tts_chunks(&text) {
+        let model_chunks = match engine.tts.split_text_into_chunks(&prepared) {
+            Ok(value) => value,
+            Err(_) => return ptr::null_mut(),
+        };
+        chunks.extend(model_chunks);
+    }
+    let json = match serde_json::to_string(&chunks) {
         Ok(value) => value,
         Err(_) => return ptr::null_mut(),
     };
@@ -244,7 +272,7 @@ mod tests {
 
     #[test]
     fn null_inputs_return_owned_errors() {
-        let engine = buzz_voice_engine_create(ptr::null());
+        let engine = buzz_voice_engine_create(ptr::null(), PocketPrecision::Fp32 as u8);
         assert!(engine.engine.is_null());
         assert!(!engine.error.is_null());
         buzz_voice_string_free(engine.error);
@@ -258,15 +286,57 @@ mod tests {
     }
 
     #[test]
-    fn chunk_preparation_returns_owned_json() {
+    fn chunk_preparation_requires_an_engine() {
         let input = CString::new("First. Second. Third.").expect("test input");
-        let json = buzz_voice_prepare_chunks_json(input.as_ptr());
+        let json = buzz_voice_prepare_chunks_json(ptr::null_mut(), input.as_ptr());
+        assert!(json.is_null());
+    }
+
+    #[test]
+    fn invalid_precision_returns_an_owned_error() {
+        let model = CString::new("/tmp/pocket").expect("test path");
+        let engine = buzz_voice_engine_create(model.as_ptr(), u8::MAX);
+        assert!(engine.engine.is_null());
+        assert!(!engine.error.is_null());
+        buzz_voice_string_free(engine.error);
+    }
+
+    #[test]
+    #[ignore = "requires BUZZ_POCKET_TEST_MODEL_DIR"]
+    fn april_fp32_abi_prepares_and_synthesizes_valid_pcm() {
+        let model = std::env::var("BUZZ_POCKET_TEST_MODEL_DIR")
+            .expect("set BUZZ_POCKET_TEST_MODEL_DIR to an April FP32 bundle");
+        let model = CString::new(model).expect("test model path");
+        let result = buzz_voice_engine_create(model.as_ptr(), PocketPrecision::Fp32 as u8);
+        if !result.error.is_null() {
+            // SAFETY: The ABI returned a live NUL-terminated owned error.
+            let error = unsafe { CStr::from_ptr(result.error) }
+                .to_string_lossy()
+                .into_owned();
+            buzz_voice_string_free(result.error);
+            panic!("engine creation failed: {error}");
+        }
+        assert!(!result.engine.is_null());
+
+        let text = CString::new(
+            "Pocket voice is running on mobile. This second sentence verifies shared chunking.",
+        )
+        .expect("test text");
+        let json = buzz_voice_prepare_chunks_json(result.engine, text.as_ptr());
         assert!(!json.is_null());
-        // SAFETY: The function returned a live NUL-terminated owned string.
-        let value = unsafe { CStr::from_ptr(json) }
-            .to_str()
-            .expect("UTF-8 JSON");
-        assert_eq!(value, r#"["First.","Second. Third."]"#);
+        // SAFETY: The ABI returned a live NUL-terminated owned JSON string.
+        let chunks: Vec<String> =
+            serde_json::from_slice(unsafe { CStr::from_ptr(json) }.to_bytes()).expect("chunk JSON");
         buzz_voice_string_free(json);
+        assert_eq!(chunks.len(), 2);
+
+        let prompt = CString::new(chunks[0].as_str()).expect("prepared prompt");
+        let pcm = buzz_voice_engine_synthesize(result.engine, prompt.as_ptr());
+        assert!(pcm.error.is_null());
+        assert!(!pcm.samples.is_null());
+        assert!(pcm.len > 24_000 / 4);
+        assert_eq!(pcm.sample_rate, 24_000);
+        buzz_voice_pcm_free(pcm);
+        buzz_voice_engine_destroy(result.engine);
     }
 }

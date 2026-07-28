@@ -11,15 +11,19 @@ import 'voice_audio_output.dart';
 
 enum PocketVoicePhase { off, loading, listening, synthesizing, speaking, error }
 
+enum PocketVoiceFailureKind { load, synthesis, playback }
+
 @immutable
 class PocketVoiceState {
   final PocketVoicePhase phase;
   final String? conversationKey;
+  final PocketVoiceFailureKind? failureKind;
   final String? error;
 
   const PocketVoiceState({
     this.phase = PocketVoicePhase.off,
     this.conversationKey,
+    this.failureKind,
     this.error,
   });
 
@@ -101,6 +105,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
         state = PocketVoiceState(
           phase: PocketVoicePhase.error,
           conversationKey: conversationKey,
+          failureKind: PocketVoiceFailureKind.load,
           error: error.toString(),
         );
       }
@@ -224,6 +229,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       state = PocketVoiceState(
         phase: PocketVoicePhase.error,
         conversationKey: state.conversationKey,
+        failureKind: PocketVoiceFailureKind.synthesis,
         error: error.toString(),
       );
     }
@@ -240,7 +246,14 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
         if (!_playbackActive && _audio.isEmpty) _finishUtterance();
       case PocketWorkerFailure():
         if (response.generation != _activeGeneration) return;
-        _failPlayback(response.message);
+        if (response.kind == PocketWorkerFailureKind.cancelled) {
+          _finishUtterance();
+          return;
+        }
+        _failPlayback(
+          response.message,
+          failureKind: PocketVoiceFailureKind.synthesis,
+        );
       case PocketWorkerAudio():
         if (response.generation != _activeGeneration) return;
         _audio.add(response);
@@ -263,7 +276,10 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       );
     } catch (error) {
       if (activeGeneration == _activeGeneration && state.enabled) {
-        _failPlayback(error.toString());
+        _failPlayback(
+          error.toString(),
+          failureKind: PocketVoiceFailureKind.playback,
+        );
       }
       return;
     }
@@ -274,14 +290,16 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       await output.stop();
       return;
     }
-    state = PocketVoiceState(
-      phase: PocketVoicePhase.speaking,
-      conversationKey: state.conversationKey,
-    );
   }
 
   void _handleAudioEvent(VoiceAudioEvent event) {
     switch (event) {
+      case VoiceAudioEvent.started:
+        if (!_playbackActive || !state.enabled) return;
+        state = PocketVoiceState(
+          phase: PocketVoicePhase.speaking,
+          conversationKey: state.conversationKey,
+        );
       case VoiceAudioEvent.completed:
         if (!_playbackActive) return;
         _playbackActive = false;
@@ -296,7 +314,12 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
           );
         }
       case VoiceAudioEvent.error:
-        if (_playbackActive) _failPlayback('Pocket voice playback failed.');
+        if (_playbackActive) {
+          _failPlayback(
+            'Pocket voice playback failed.',
+            failureKind: PocketVoiceFailureKind.playback,
+          );
+        }
       case VoiceAudioEvent.interrupted:
       case VoiceAudioEvent.routeLost:
       case VoiceAudioEvent.backgrounded:
@@ -304,7 +327,10 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
     }
   }
 
-  void _failPlayback(String message) {
+  void _failPlayback(
+    String message, {
+    required PocketVoiceFailureKind failureKind,
+  }) {
     _worker?.cancel();
     _utterances.clear();
     _activeGeneration = null;
@@ -316,6 +342,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       state = PocketVoiceState(
         phase: PocketVoicePhase.error,
         conversationKey: state.conversationKey,
+        failureKind: failureKind,
         error: message,
       );
     }

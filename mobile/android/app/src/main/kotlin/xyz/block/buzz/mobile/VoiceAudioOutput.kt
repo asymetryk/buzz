@@ -161,6 +161,21 @@ internal class VoiceAudioOutput(
         thread(name = "buzz-pocket-playback") {
             var offset = 0
             var complete = false
+            var started = false
+            fun reportStartedIfPlaybackAdvanced() {
+                if (started || generation.get() != currentGeneration) return
+                val playedFrames =
+                    runCatching {
+                        nextTrack.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+                    }.getOrNull() ?: return
+                if (playedFrames == 0L) return
+                started = true
+                mainHandler.post {
+                    if (generation.get() == currentGeneration && track === nextTrack) {
+                        channel.invokeMethod("started", null)
+                    }
+                }
+            }
             try {
                 while (offset < pcm.size && generation.get() == currentGeneration) {
                     val written = nextTrack.write(
@@ -171,6 +186,7 @@ internal class VoiceAudioOutput(
                     )
                     if (written <= 0) break
                     offset += written
+                    reportStartedIfPlaybackAdvanced()
                 }
                 complete = offset == pcm.size
                 if (complete) {
@@ -188,6 +204,7 @@ internal class VoiceAudioOutput(
                             runCatching {
                                 nextTrack.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
                             }.getOrNull() ?: break
+                        reportStartedIfPlaybackAdvanced()
                         if (playedFrames >= targetFrames) {
                             drained = true
                             break

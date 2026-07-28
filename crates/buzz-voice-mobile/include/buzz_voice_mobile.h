@@ -16,8 +16,12 @@ typedef struct BuzzVoicePcm {
   char *error;
 } BuzzVoicePcm;
 
-BuzzVoiceEngineResult buzz_voice_engine_create(const char *model_dir);
-char *buzz_voice_prepare_chunks_json(const char *text);
+#define BUZZ_VOICE_PRECISION_FP32 0
+#define BUZZ_VOICE_PRECISION_INT8 1
+
+BuzzVoiceEngineResult buzz_voice_engine_create(const char *model_dir,
+                                               uint8_t precision);
+char *buzz_voice_prepare_chunks_json(void *engine, const char *text);
 BuzzVoicePcm buzz_voice_engine_synthesize(void *engine, const char *text);
 void buzz_voice_engine_cancel(void *engine);
 void buzz_voice_engine_reset_cancel(void *engine);

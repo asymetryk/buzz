@@ -35,11 +35,14 @@ class PocketWorkerDone extends PocketWorkerResponse {
   const PocketWorkerDone(this.generation);
 }
 
+enum PocketWorkerFailureKind { load, synthesis, cancelled }
+
 class PocketWorkerFailure extends PocketWorkerResponse {
   final int? generation;
+  final PocketWorkerFailureKind kind;
   final String message;
 
-  const PocketWorkerFailure(this.message, {this.generation});
+  const PocketWorkerFailure(this.kind, this.message, {this.generation});
 }
 
 class PocketWorkerStopped extends PocketWorkerResponse {
@@ -177,7 +180,10 @@ void _workerMain((SendPort, String) startup) {
   try {
     handle = ffi.create(startup.$2);
   } catch (error) {
-    output.send((commands.sendPort, PocketWorkerFailure(error.toString())));
+    output.send((
+      commands.sendPort,
+      PocketWorkerFailure(PocketWorkerFailureKind.load, error.toString()),
+    ));
     commands.close();
     return;
   }
@@ -186,7 +192,7 @@ void _workerMain((SendPort, String) startup) {
     switch (command) {
       case _Synthesize():
         try {
-          final chunks = ffi.prepareChunks(command.text);
+          final chunks = ffi.prepareChunks(handle, command.text);
           if (chunks.isEmpty) {
             output.send(PocketWorkerDone(command.generation));
             return;
@@ -207,9 +213,13 @@ void _workerMain((SendPort, String) startup) {
             );
           }
         } catch (error) {
+          final message = error.toString();
           output.send(
             PocketWorkerFailure(
-              error.toString(),
+              message.contains('synthesis cancelled')
+                  ? PocketWorkerFailureKind.cancelled
+                  : PocketWorkerFailureKind.synthesis,
+              message,
               generation: command.generation,
             ),
           );

@@ -35,7 +35,8 @@ class _VoiceSection extends ConsumerWidget {
           title: 'Pocket voice',
           subtitle:
               model.message ??
-              'Private, on-device speech. Downloads 473 MB after install.',
+              'Private, on-device speech. Downloads '
+                  '${pocketModelRuntimeBytes ~/ 1000000} MB after install.',
           subtitleMaxLines: 3,
           value: status,
           trailing: downloading

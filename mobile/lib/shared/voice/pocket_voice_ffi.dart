@@ -22,8 +22,8 @@ final class _PcmResult extends ffi.Struct {
   external ffi.Pointer<ffi.Char> error;
 }
 
-typedef _CreateNative = _EngineResult Function(ffi.Pointer<Utf8>);
-typedef _CreateDart = _EngineResult Function(ffi.Pointer<Utf8>);
+typedef _CreateNative = _EngineResult Function(ffi.Pointer<Utf8>, ffi.Uint8);
+typedef _CreateDart = _EngineResult Function(ffi.Pointer<Utf8>, int);
 typedef _SynthNative =
     _PcmResult Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
 typedef _SynthDart =
@@ -32,8 +32,10 @@ typedef _CancelNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _CancelDart = void Function(ffi.Pointer<ffi.Void>);
 typedef _ResetCancelNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _ResetCancelDart = void Function(ffi.Pointer<ffi.Void>);
-typedef _PrepareNative = ffi.Pointer<ffi.Char> Function(ffi.Pointer<Utf8>);
-typedef _PrepareDart = ffi.Pointer<ffi.Char> Function(ffi.Pointer<Utf8>);
+typedef _PrepareNative =
+    ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
+typedef _PrepareDart =
+    ffi.Pointer<ffi.Char> Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
 typedef _DestroyNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _DestroyDart = void Function(ffi.Pointer<ffi.Void>);
 typedef _FreePcmNative = ffi.Void Function(_PcmResult);
@@ -49,6 +51,8 @@ class PocketVoicePcm {
 }
 
 class PocketVoiceFfi {
+  static const fp32Precision = 0;
+
   final ffi.DynamicLibrary _library;
   late final _CreateDart _create;
   late final _SynthDart _synthesize;
@@ -89,7 +93,7 @@ class PocketVoiceFfi {
 
   int create(String modelPath) {
     final path = modelPath.toNativeUtf8();
-    final result = _create(path);
+    final result = _create(path, fp32Precision);
     calloc.free(path);
     if (result.error != ffi.nullptr) {
       throw StateError(_takeError(result.error));
@@ -128,9 +132,9 @@ class PocketVoiceFfi {
   void resetCancel(int handle) =>
       _resetCancel(ffi.Pointer<ffi.Void>.fromAddress(handle));
 
-  List<String> prepareChunks(String text) {
+  List<String> prepareChunks(int handle, String text) {
     final input = text.toNativeUtf8();
-    final result = _prepare(input);
+    final result = _prepare(ffi.Pointer<ffi.Void>.fromAddress(handle), input);
     calloc.free(input);
     if (result == ffi.nullptr) {
       throw StateError('Pocket text preparation returned no result.');

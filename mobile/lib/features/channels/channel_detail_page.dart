@@ -137,6 +137,7 @@ class ChannelDetailPage extends HookConsumerWidget {
     final voiceEventKey =
         messagesState.value?.map((event) => event.id).join(',') ?? '';
     useEffect(() {
+      if (channel.isForum) return null;
       final events = messagesState.value;
       if (events == null) return null;
       final spoken = voiceConversation.update(
@@ -276,7 +277,8 @@ class ChannelDetailPage extends HookConsumerWidget {
                 ],
               ),
         actions: [
-          PocketVoiceButton(conversationKey: 'channel:${channel.id}'),
+          if (!resolvedChannel.isForum)
+            PocketVoiceButton(conversationKey: 'channel:${channel.id}'),
           _MembersButton(
             channelId: resolvedChannel.id,
             channel: resolvedChannel,
