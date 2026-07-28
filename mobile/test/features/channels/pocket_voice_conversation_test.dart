@@ -62,6 +62,30 @@ void main() {
     );
   });
 
+  test('speaks new stream-message v2 bot replies', () {
+    final conversation = PocketVoiceConversation();
+    conversation.update(
+      events: const [],
+      members: [bot],
+      currentPubkey: 'self',
+    );
+
+    final spoken = conversation.update(
+      events: [
+        _event(
+          'v2',
+          'bot',
+          'Assistant answer',
+          kind: EventKind.streamMessageV2,
+        ),
+      ],
+      members: [bot],
+      currentPubkey: 'self',
+    );
+
+    expect(spoken.map((event) => event.id), ['v2']);
+  });
+
   test('thread conversation accepts only direct replies to its head', () {
     final conversation = PocketVoiceConversation();
     conversation.update(
@@ -86,16 +110,21 @@ void main() {
   });
 }
 
-NostrEvent _event(String id, String pubkey, String content, {String? parent}) =>
-    NostrEvent(
-      id: id,
-      pubkey: pubkey,
-      createdAt: 1,
-      kind: EventKind.streamMessage,
-      tags: [
-        const ['h', 'channel'],
-        if (parent != null) ['e', parent, '', 'reply'],
-      ],
-      content: content,
-      sig: '',
-    );
+NostrEvent _event(
+  String id,
+  String pubkey,
+  String content, {
+  String? parent,
+  int kind = EventKind.streamMessage,
+}) => NostrEvent(
+  id: id,
+  pubkey: pubkey,
+  createdAt: 1,
+  kind: kind,
+  tags: [
+    const ['h', 'channel'],
+    if (parent != null) ['e', parent, '', 'reply'],
+  ],
+  content: content,
+  sig: '',
+);

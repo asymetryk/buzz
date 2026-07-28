@@ -159,6 +159,8 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
         );
       case PocketWorkerAudio():
         if (response.generation != _generation) return;
+        final generation = response.generation;
+        final conversationKey = state.conversationKey;
         final bytes = response.data.materialize().asUint8List();
         final audioSeconds = bytes.length / 2 / response.sampleRate;
         final rtf = audioSeconds == 0
@@ -166,9 +168,25 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
             : response.synthesisTime.inMicroseconds /
                   Duration.microsecondsPerSecond /
                   audioSeconds;
-        await ref
-            .read(voiceAudioOutputProvider)
-            .play(Uint8List.fromList(bytes), response.sampleRate);
+        final output = ref.read(voiceAudioOutputProvider);
+        try {
+          await output.play(Uint8List.fromList(bytes), response.sampleRate);
+        } catch (error) {
+          if (generation == _generation && state.enabled) {
+            state = PocketVoiceState(
+              phase: PocketVoicePhase.error,
+              conversationKey: state.conversationKey,
+              error: error.toString(),
+            );
+          }
+          return;
+        }
+        if (generation != _generation ||
+            !state.enabled ||
+            state.conversationKey != conversationKey) {
+          await output.stop();
+          return;
+        }
         _playbackClock?.stop();
         state = PocketVoiceState(
           phase: PocketVoicePhase.speaking,

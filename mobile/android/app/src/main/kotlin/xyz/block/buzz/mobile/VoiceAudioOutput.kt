@@ -162,14 +162,26 @@ internal class VoiceAudioOutput(
                 if (written <= 0) break
                 offset += written
             }
-            if (generation.get() == currentGeneration) {
-                nextTrack.stop()
-                nextTrack.release()
-                track = null
-                abandonFocus()
-                mainHandler.post {
+            val complete = offset == pcm.size
+            if (complete) {
+                val targetFrames = pcm.size.toLong() / 2
+                while (generation.get() == currentGeneration) {
+                    val playedFrames =
+                        runCatching {
+                            nextTrack.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+                        }.getOrNull() ?: break
+                    if (playedFrames >= targetFrames) break
+                    Thread.sleep(5)
+                }
+            }
+            mainHandler.post {
+                if (generation.get() == currentGeneration && track === nextTrack) {
+                    nextTrack.stop()
+                    nextTrack.release()
+                    track = null
+                    abandonFocus()
                     channel.invokeMethod(
-                        if (offset == pcm.size) "completed" else "error",
+                        if (complete) "completed" else "error",
                         null,
                     )
                 }

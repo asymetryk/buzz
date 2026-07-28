@@ -42,7 +42,8 @@ class PocketVoiceConversation {
     final self = currentPubkey?.toLowerCase();
     return [
       for (final event in unseen)
-        if (event.kind == EventKind.streamMessage &&
+        if ((event.kind == EventKind.streamMessage ||
+                event.kind == EventKind.streamMessageV2) &&
             event.pubkey.toLowerCase() != self &&
             bots.contains(event.pubkey.toLowerCase()) &&
             event.content.trim().length > 1 &&
