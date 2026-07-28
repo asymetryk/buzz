@@ -1,11 +1,9 @@
-//! Pocket TTS engine wrapper around sherpa-onnx's `OfflineTts`.
+//! Pocket TTS engine for Kyutai's `english_2026-04` bundle.
 //!
-//! Pocket TTS is a small (~473 MB fp32 ONNX) zero-shot voice-cloning TTS
-//! model from Kyutai that runs quickly on CPU via sherpa-onnx.
-//!
-//! Buzz uses full-precision fp32 sessions because a direct same-runtime A/B
-//! (k2-fsa/sherpa-onnx#3172) found the ~189 MB int8 ONNX export audibly
-//! degraded output quality.
+//! Pocket TTS is a compact zero-shot voice-cloning model from Kyutai. Buzz
+//! uses the full-precision April ONNX export and implements its SentencePiece,
+//! learned-BOS, and recurrent-state frontend on top of the ONNX Runtime already
+//! linked by sherpa-onnx.
 //!
 //! ## Attribution
 //!
@@ -15,10 +13,6 @@
 //! - **Mimi neural codec**: Kyutai, bundled in the same release. CC-BY-4.0.
 //! - **ONNX export**: KevinAHM —
 //!   <https://huggingface.co/KevinAHM/pocket-tts-onnx>. CC-BY-4.0.
-//! - **sherpa-onnx repackage**: csukuangfj / k2-fsa —
-//!   <https://huggingface.co/csukuangfj2/sherpa-onnx-pocket-tts-2026-01-26>.
-//!   Repackages KevinAHM's export with the file layout sherpa-onnx's
-//!   `OfflineTtsPocketModelConfig` expects. CC-BY-4.0.
 //! - **Reference voice WAV** (`reference_sample.wav`): the "Mary
 //!   (f, conversation)" preset from the Kyutai TTS demo
 //!   (<https://kyutai.org/tts>), which maps to `vctk/p333_023_enhanced.wav`
@@ -42,18 +36,17 @@
 //! - `Engine::synth_chunk(&self, text, lang, &VoiceStyle, steps)`
 //!   → `Result<Vec<f32>, String>`
 //!
-//! `lang` and `steps` are accepted for API compatibility with the previous
-//! Kokoro engine but are unused — Pocket TTS does its own language ID from
-//! the input text and is not a diffusion model (consistency LM, one step).
-//! There is no speed knob: sherpa-onnx's `GenerationConfig.speed` is only
-//! read by some model families (vits), never by the Pocket impl
-//! (`offline-tts-pocket-impl.h` — zero references), and upstream pocket-tts
-//! has no speed parameter either.
+//! `lang` and `steps` are accepted for compatibility with the shared engine
+//! contract but are unused: this bundle is English-only and uses one flow step.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use sherpa_onnx::{GenerationConfig, OfflineTts, OfflineTtsConfig, Wave};
+use sherpa_onnx::Wave;
+
+#[path = "pocket_april.rs"]
+mod pocket_april;
+use pocket_april::AprilPocketTts;
 
 // ── Engine-module contract: public consts ─────────────────────────────────────
 
@@ -69,82 +62,6 @@ pub const DEFAULT_VOICE: &str = "reference_sample";
 /// Kokoro `.bin` style vectors — the model conditions on raw waveform samples,
 /// not a precomputed embedding, so the extension change is honest.
 pub const VOICE_FILE_EXT: &str = "wav";
-
-// ── Tuning ────────────────────────────────────────────────────────────────────
-
-/// Single-threaded ONNX execution for predictable CPU contention with the STT
-/// pipeline. Matches `STT_NUM_THREADS` in `stt.rs`; raise only if a benchmark
-/// argues for it.
-const TTS_NUM_THREADS: i32 = 1;
-
-/// LRU cache size for cloned voice embeddings inside the sherpa-onnx engine.
-/// We bind to one voice per pipeline today, but the upstream example uses 16
-/// and the cost is negligible — keep room for future multi-voice support.
-const VOICE_EMBEDDING_CACHE_CAPACITY: i32 = 16;
-
-/// Pocket TTS is a consistency-based LM. Generation quality saturates at one
-/// denoising step — the upstream `GenerationConfig` default of 5 multiplies
-/// synthesis time by ~5× with no audible benefit on this model.
-const SYNTH_NUM_STEPS: i32 = 1;
-
-/// Leave the generated audio's silences untouched (1.0 is the identity).
-///
-/// sherpa-onnx's `ScaleSilence` (`offline-tts.cc`) is *not* pre/post padding
-/// control: it finds every interior silence run ≥ 0.2 s (|s| ≤ 0.01) and
-/// multiplies its length by this factor. The reference Pocket TTS pipeline
-/// preserves natural clause breaks, breaths, and punctuation pauses, so the
-/// identity scale keeps those interior silences intact.
-const SYNTH_SILENCE_SCALE: f32 = 1.0;
-
-/// sherpa-onnx upstream default for `max_frames` (LM steps), in
-/// `offline-tts-pocket-impl.h:Generate`. 500 steps ≈ 40 s of audio at the
-/// Mimi 12.5 Hz frame rate. Referenced only by the regression test below;
-/// production code path never raises (or even reads) this value — we just
-/// leave sherpa-onnx's own default in place by not setting the override.
-#[cfg(test)]
-const SHERPA_ONNX_MAX_FRAMES_DEFAULT: i32 = 500;
-
-/// Tight `max_frames` we ask for on short, padded prompts to bound the
-/// original "monster breathing" runaway. 100 LM steps ≈ 8 s of audio —
-/// roomy for any one-to-four-word utterance the user is likely to elicit
-/// while still well short of the 40 s upstream default. Chosen with slack so
-/// we never *truncate* a legitimate short reply.
-const SHORT_PROMPT_MAX_FRAMES: i32 = 100;
-
-/// Word-count threshold (inclusive) below which we pad the prompt with
-/// leading spaces and cap `max_frames` tighter than the upstream default.
-/// Matches upstream `pocket_tts.models.tts_model.prepare_text_prompt`. Above
-/// this threshold we leave sherpa-onnx's own defaults in place because
-/// dropping `frames_after_eos` below the upstream default of 3 can clip the
-/// leading audio of multi-clause sentences.
-const SHORT_PROMPT_WORD_THRESHOLD: usize = 4;
-
-/// Number of leading spaces prepended to short prompts. The upstream Python
-/// uses exactly 8 — keep parity rather than tuning blindly.
-///
-/// This is upstream's *only* mitigation for the FlowLM cold-start smear on
-/// short utterances (kyutai-labs/pocket-tts #91, #70): the autoregressive
-/// generation has a 2–3 step "settle" period where the first phoneme can be
-/// smeared. The pad must remain whitespace-only: synthesized sacrificial text
-/// requires amplitude-threshold trimming, which can eat soft word starts.
-const SHORT_PROMPT_PAD_SPACES: usize = 8;
-
-/// sherpa-onnx's documented `frames_after_eos` default. We deliberately do
-/// *not* override this knob because values below the upstream default of 3 can
-/// clip the leading audio of multi-clause sentences. The constant exists only
-/// for the invariant test below. Source: `offline-tts-pocket-impl.h:Generate`.
-#[cfg(test)]
-const SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT: i32 = 3;
-
-// ── ONNX file names (five Pocket TTS sessions plus two JSON tables) ───────────
-
-const FILE_LM_MAIN: &str = "lm_main.onnx";
-const FILE_LM_FLOW: &str = "lm_flow.onnx";
-const FILE_ENCODER: &str = "encoder.onnx";
-const FILE_DECODER: &str = "decoder.onnx";
-const FILE_TEXT_COND: &str = "text_conditioner.onnx";
-const FILE_VOCAB: &str = "vocab.json";
-const FILE_TOKEN_SCORES: &str = "token_scores.json";
 
 // ── Voice style ───────────────────────────────────────────────────────────────
 
@@ -183,103 +100,42 @@ pub fn load_voice_style(path: &Path) -> Result<VoiceStyle, String> {
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
-/// Pocket TTS engine handle. Cheap to construct (one `OfflineTts::create`
-/// call). Owned by the TTS worker thread for the lifetime of a huddle session.
-///
-/// `OfflineTts` does not implement `Debug`, so we don't derive it here — the
-/// pipeline only needs to move the engine into the worker thread and call
-/// `synth_chunk` on it, never to print it.
+/// Pocket TTS engine handle, owned by the TTS worker for a huddle session.
 pub struct PocketTts {
-    inner: OfflineTts,
+    inner: Mutex<AprilPocketTts>,
 }
 
-/// Build the Pocket TTS engine from the model directory installed by
-/// `huddle::models`. Returns `Err` if any expected ONNX or JSON file is
-/// missing — readiness is normally enforced by `is_tts_ready` upstream, but
-/// the check is repeated here so a manually-modified model dir produces a
-/// clear error string instead of an opaque sherpa-onnx `None`.
+/// Build the April Pocket TTS engine from the directory installed by
+/// `huddle::models`.
 pub fn load_text_to_speech(model_dir: &str) -> Result<PocketTts, String> {
     let dir = PathBuf::from(model_dir);
-    for name in [
-        FILE_LM_MAIN,
-        FILE_LM_FLOW,
-        FILE_ENCODER,
-        FILE_DECODER,
-        FILE_TEXT_COND,
-        FILE_VOCAB,
-        FILE_TOKEN_SCORES,
-    ] {
-        let p = dir.join(name);
-        if !p.is_file() {
-            return Err(format!("missing Pocket TTS file: {}", p.display()));
-        }
-    }
-
-    let to_str = |name: &str| -> String { dir.join(name).to_string_lossy().into_owned() };
-
-    // Build the config by mutating defaults — mirrors `stt.rs` and stays
-    // resilient if sherpa-onnx adds unrelated model-family fields.
-    let mut cfg = OfflineTtsConfig::default();
-    cfg.model.pocket.lm_main = Some(to_str(FILE_LM_MAIN));
-    cfg.model.pocket.lm_flow = Some(to_str(FILE_LM_FLOW));
-    cfg.model.pocket.encoder = Some(to_str(FILE_ENCODER));
-    cfg.model.pocket.decoder = Some(to_str(FILE_DECODER));
-    cfg.model.pocket.text_conditioner = Some(to_str(FILE_TEXT_COND));
-    cfg.model.pocket.vocab_json = Some(to_str(FILE_VOCAB));
-    cfg.model.pocket.token_scores_json = Some(to_str(FILE_TOKEN_SCORES));
-    cfg.model.pocket.voice_embedding_cache_capacity = VOICE_EMBEDDING_CACHE_CAPACITY;
-    cfg.model.num_threads = TTS_NUM_THREADS;
-    // Explicit — defaults are not part of the API contract, and noisy debug
-    // logging in release builds would be expensive on every synthesized chunk.
-    cfg.model.debug = false;
-
-    let inner = OfflineTts::create(&cfg)
-        .ok_or_else(|| "OfflineTts::create returned None for Pocket TTS".to_string())?;
-    Ok(PocketTts { inner })
+    Ok(PocketTts {
+        inner: Mutex::new(AprilPocketTts::load(&dir)?),
+    })
 }
 
 // ── Prompt preparation ────────────────────────────────────────────────────────
 
-/// Result of [`prepare_pocket_prompt`]: a synthesizer-ready prompt plus the
-/// per-call generation overrides derived from the original text.
-///
-/// `None` for either override means "leave sherpa-onnx's documented default
-/// in place". The pipeline only sets `max_frames` (and only for short
-/// padded inputs) so it can bound the original "monster breathing" runaway
-/// without disturbing the rest of the LM sampling envelope.
+/// Result of [`prepare_pocket_prompt`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PreparedPrompt {
-    /// Text to hand to `OfflineTts::generate_with_config`. Capitalized,
-    /// punctuation-terminated, and (for short inputs) left-padded with
-    /// spaces — upstream's mitigation for the FlowLM cold-start smear.
+    /// Capitalized, whitespace-normalized, punctuation-terminated text.
     pub text: String,
-    /// Value to pass via `GenerationConfig.extra["max_frames"]`, or `None` to
-    /// keep the upstream default of 500 LM steps. We only override on short
-    /// padded prompts where we have a tight expectation on output length.
-    pub max_frames: Option<i32>,
+    /// April's upstream heuristic is 3+2 frames for ≤4 words and 1+2 otherwise.
+    pub frames_after_eos: usize,
 }
 
-/// Mirror of the *text-preparation* half of upstream
-/// `pocket_tts.models.tts_model.prepare_text_prompt`. Sherpa-onnx's C++
-/// Pocket TTS impl does not run these preparation steps, so short /
-/// unpunctuated / lowercase inputs can trigger up to 40 s of runaway
-/// generation when the EOS logit never crosses its threshold. We replicate
-/// the upstream Python recipe here:
+/// Mirror the April bundle's upstream text preparation:
 ///
 /// 1. Collapse interior whitespace (already done by `preprocess_for_tts`, but
 ///    cheap to re-check after sentence splitting).
 /// 2. Capitalize the first letter.
-/// 3. Append `.` if the text doesn't end in punctuation.
-/// 4. If fewer than five words, prepend `SHORT_PROMPT_PAD_SPACES` spaces
-///    (upstream's cold-start mitigation — see the constant's docstring) and
-///    return a tight [`SHORT_PROMPT_MAX_FRAMES`] cap so the LM can't run
-///    away if EOS still doesn't fire.
+/// 3. Append `.` when the last character is alphanumeric.
+/// 4. Use the model's word-count-based post-EOS frame heuristic.
 ///
-/// We do **not** override `frames_after_eos` — sherpa-onnx's default of 3
-/// is what we want. An earlier version set it to 1 on long inputs, which
-/// clipped the leading audio of multi-clause sentences ("first 'yep' is
-/// just static" regression). Tests `prepare_prompt_never_lowers_frames_…`
-/// lock this in.
+/// Unlike the January bundle, `english_2026-04` explicitly sets
+/// `pad_with_spaces_for_short_inputs` to false. Keeping that old eight-space
+/// prefix would change the very phrase beginnings this model upgrade targets.
 ///
 /// Returns `None` only if the input is empty after trimming — caller should
 /// skip synthesis in that case.
@@ -322,45 +178,15 @@ pub(crate) fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
         .chars()
         .next_back()
         .expect("cleaned non-empty above");
-    if !matches!(last, '.' | '!' | '?' | ';' | ':' | ',') {
+    if last.is_alphanumeric() {
         cleaned.push('.');
     }
 
-    // Word count of the *cleaned but not padded* text — padding is whitespace
-    // only and would just lie to the threshold check below.
     let word_count = cleaned.split_whitespace().count();
 
-    let (final_text, max_frames) = if word_count <= SHORT_PROMPT_WORD_THRESHOLD {
-        let mut padded = String::with_capacity(cleaned.len() + SHORT_PROMPT_PAD_SPACES);
-        for _ in 0..SHORT_PROMPT_PAD_SPACES {
-            padded.push(' ');
-        }
-        padded.push_str(&cleaned);
-        (padded, Some(SHORT_PROMPT_MAX_FRAMES))
-    } else {
-        // For everything ≥5 words, fall back to upstream defaults. Overriding
-        // these is what caused the "first 'yep' is static" regression — the
-        // upstream LM has been tuned for `frames_after_eos = 3` and
-        // `max_frames = 500`, and there's no clear win in second-guessing.
-        (cleaned, None)
-    };
-
     Some(PreparedPrompt {
-        text: final_text,
-        max_frames,
-    })
-}
-
-/// Build the `GenerationConfig.extra` HashMap from a [`PreparedPrompt`].
-///
-/// Centralised so the invariant test below can assert that we **never** emit a
-/// `frames_after_eos` override. Leaving the key unset preserves sherpa-onnx's
-/// upstream default of 3.
-fn build_generation_extra(prepared: &PreparedPrompt) -> Option<HashMap<String, serde_json::Value>> {
-    prepared.max_frames.map(|mf| {
-        let mut h: HashMap<String, serde_json::Value> = HashMap::with_capacity(1);
-        h.insert("max_frames".to_string(), serde_json::Value::from(mf));
-        h
+        text: cleaned,
+        frames_after_eos: if word_count <= 4 { 5 } else { 3 },
     })
 }
 
@@ -374,76 +200,20 @@ impl PocketTts {
     pub fn synth_chunk(
         &self,
         text: &str,
-        lang: &str,
-        style: &VoiceStyle,
-        steps: usize,
-    ) -> Result<Vec<f32>, String> {
-        self.synth_chunk_with_callback(text, lang, style, steps, None::<fn(&[f32], f32) -> bool>)
-    }
-
-    /// Synthesise `text`, allowing the caller to stop generation early.
-    ///
-    /// The callback receives the samples generated so far and a progress
-    /// value in `[0, 1]`. Return `true` to continue or `false` to cancel.
-    /// Clients that do not need cancellation should use [`Self::synth_chunk`].
-    pub fn synth_chunk_with_callback<F>(
-        &self,
-        text: &str,
         _lang: &str,
         style: &VoiceStyle,
         _steps: usize,
-        callback: Option<F>,
-    ) -> Result<Vec<f32>, String>
-    where
-        F: FnMut(&[f32], f32) -> bool + 'static,
-    {
-        // Mirror upstream pocket-tts prompt prep — without this short or
-        // unpunctuated inputs can cause the LM's EOS logit to never trip,
-        // producing up to 40 s of "monster breathing" garbage on the first
-        // utterance. See `prepare_pocket_prompt` for the full recipe.
+    ) -> Result<Vec<f32>, String> {
+        // Mirror the April bundle's prompt normalization and EOS policy.
         let prepared = match prepare_pocket_prompt(text) {
             Some(p) => p,
             None => return Ok(Vec::new()),
         };
 
-        // Per-call generation hints sherpa-onnx forwards to
-        // `offline-tts-pocket-impl.h`. We only override `max_frames`, and
-        // only for short padded prompts where we have a tight expectation
-        // on output length — that bounds the original runaway without
-        // disturbing the rest of the LM sampling envelope. See
-        // `prepare_pocket_prompt` docs for the regression history.
-        let extra = build_generation_extra(&prepared);
-
-        let cfg = GenerationConfig {
-            num_steps: SYNTH_NUM_STEPS,
-            silence_scale: SYNTH_SILENCE_SCALE,
-            reference_audio: Some(style.samples.clone()),
-            reference_sample_rate: style.sample_rate,
-            extra,
-            // `speed` stays at its default: the Pocket impl never reads it
-            // (see the engine-contract note in the module docs).
-            ..Default::default()
-        };
-
-        let audio = self
-            .inner
-            .generate_with_config(&prepared.text, &cfg, callback)
-            .ok_or_else(|| {
-                format!(
-                    "Pocket TTS synthesis failed for text ({} chars)",
-                    prepared.text.len()
-                )
-            })?;
-
-        let sample_rate = audio.sample_rate();
-        if sample_rate != SAMPLE_RATE as i32 {
-            eprintln!(
-                "buzz-voice: Pocket TTS returned unexpected sample rate {sample_rate}Hz \
-                 (expected {SAMPLE_RATE}Hz); playback speed may be wrong"
-            );
-        }
-
-        Ok(audio.samples().to_vec())
+        self.inner
+            .lock()
+            .map_err(|_| "Pocket TTS engine lock poisoned".to_string())?
+            .synth_chunk(&prepared, style)
     }
 }
 
@@ -460,59 +230,31 @@ mod tests {
         assert!(prepare_pocket_prompt("\n\t  ").is_none());
     }
 
-    /// Helper: the exact leading sequence prepended to every short prompt —
-    /// 8 spaces of padding (upstream's cold-start mitigation).
-    /// Centralising this keeps the assertions readable.
-    fn short_prefix() -> String {
-        " ".repeat(SHORT_PROMPT_PAD_SPACES)
-    }
-
     #[test]
-    fn prepare_prompt_pads_and_capitalizes_one_word() {
-        // The "yep" case Tyler hit in production — bare lowercase one-word
-        // utterance with no punctuation. Must be padded with the short-prompt
-        // space pad, capitalized, terminated, with a tight `max_frames` cap
-        // to bound runaway gen.
+    fn prepare_prompt_capitalizes_one_word_without_january_padding() {
         let out = prepare_pocket_prompt("yep").expect("non-empty");
-        assert_eq!(out.text, format!("{}Yep.", short_prefix()));
-        assert_eq!(out.max_frames, Some(SHORT_PROMPT_MAX_FRAMES));
-        const {
-            assert!(
-                SHORT_PROMPT_MAX_FRAMES < SHERPA_ONNX_MAX_FRAMES_DEFAULT,
-                "short cap must be tighter than the upstream default"
-            );
-        }
+        assert_eq!(out.text, "Yep.");
+        assert_eq!(out.frames_after_eos, 5);
     }
 
     #[test]
     fn prepare_prompt_preserves_existing_punctuation() {
         let out = prepare_pocket_prompt("yes!").expect("non-empty");
-        assert_eq!(out.text, format!("{}Yes!", short_prefix())); // exclamation kept
+        assert_eq!(out.text, "Yes!");
         let out = prepare_pocket_prompt("really?").expect("non-empty");
-        assert_eq!(out.text, format!("{}Really?", short_prefix()));
+        assert_eq!(out.text, "Really?");
     }
 
     #[test]
     fn prepare_prompt_threshold_is_inclusive_at_four_words() {
-        // 4 words = short (padded + tight max_frames); 5 words = long
-        // (no padding, no overrides — upstream defaults stand).
+        // April changes only the post-EOS heuristic at the four-word boundary.
         let four = prepare_pocket_prompt("one two three four").expect("non-empty");
-        assert_eq!(
-            four.text,
-            format!("{}One two three four.", short_prefix()),
-            "four-word input should get exactly the space pad"
-        );
-        assert_eq!(four.max_frames, Some(SHORT_PROMPT_MAX_FRAMES));
+        assert_eq!(four.text, "One two three four.");
+        assert_eq!(four.frames_after_eos, 5);
 
         let five = prepare_pocket_prompt("one two three four five").expect("non-empty");
-        assert!(
-            !five.text.starts_with(' '),
-            "five-word input should NOT be padded"
-        );
-        assert_eq!(
-            five.max_frames, None,
-            "long inputs must leave sherpa-onnx's max_frames default in place"
-        );
+        assert_eq!(five.text, "One two three four five.");
+        assert_eq!(five.frames_after_eos, 3);
     }
 
     #[test]
@@ -520,21 +262,20 @@ mod tests {
         let long = "This is a longer sentence that the model should handle just fine.";
         let out = prepare_pocket_prompt(long).expect("non-empty");
         assert!(!out.text.starts_with(' '));
-        assert_eq!(out.max_frames, None);
+        assert_eq!(out.frames_after_eos, 3);
         assert!(out.text.ends_with('.'));
     }
 
     #[test]
     fn prepare_prompt_collapses_whitespace() {
         let out = prepare_pocket_prompt("Hello    world\n\nfriend").expect("non-empty");
-        // 3 words → short → padded. Interior whitespace collapsed.
-        assert_eq!(out.text, format!("{}Hello world friend.", short_prefix()));
+        assert_eq!(out.text, "Hello world friend.");
     }
 
     #[test]
     fn prepare_prompt_does_not_double_capitalize_already_uppercase() {
         let out = prepare_pocket_prompt("HELLO there").expect("non-empty");
-        assert_eq!(out.text, format!("{}HELLO there.", short_prefix()));
+        assert_eq!(out.text, "HELLO there.");
     }
 
     #[test]
@@ -545,98 +286,9 @@ mod tests {
         assert!(out.text.contains("Дa."));
     }
 
-    /// REGRESSION GUARD: short prompts must receive *only* whitespace
-    /// padding — no sacrificial text. A previous revision prepended a
-    /// `". . "` cold-start absorber and trimmed the rendered audio back out
-    /// with an amplitude threshold that could eat soft word onsets. If
-    /// non-whitespace ever reappears in the pad, the synth output will
-    /// contain audio for text the user never wrote.
     #[test]
-    fn prepare_prompt_pad_is_whitespace_only() {
+    fn prepare_prompt_does_not_add_an_onset_prefix() {
         let out = prepare_pocket_prompt("I'm happy.").expect("non-empty");
-        let pad_len = out.text.len() - "I'm happy.".len();
-        assert!(
-            out.text[..pad_len].chars().all(|c| c == ' '),
-            "short-prompt pad must be spaces only, got {:?}",
-            &out.text[..pad_len]
-        );
-        assert_eq!(out.text, format!("{}I'm happy.", short_prefix()));
-    }
-
-    // ── build_generation_extra ───────────────────────────────────────────────
-    //
-    // Short prompts override only `max_frames`; long prompts emit no extras.
-    // Every other knob remains at sherpa-onnx's documented default, notably
-    // `frames_after_eos = 3`.
-
-    #[test]
-    fn build_extra_short_prompt_sets_only_max_frames() {
-        let prepared = prepare_pocket_prompt("yep").expect("non-empty");
-        let extra = build_generation_extra(&prepared).expect("short prompts get extra");
-        // Exactly one key — `max_frames` — and nothing else.
-        assert_eq!(extra.len(), 1, "extra has unexpected keys: {extra:?}");
-        assert_eq!(
-            extra.get("max_frames"),
-            Some(&serde_json::Value::from(SHORT_PROMPT_MAX_FRAMES))
-        );
-        assert!(
-            !extra.contains_key("frames_after_eos"),
-            "frames_after_eos must never be set — upstream default of {SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT} is what we want"
-        );
-    }
-
-    #[test]
-    fn build_extra_long_prompt_is_none() {
-        // ≥5 words: no extras, so the upstream LM defaults remain authoritative.
-        let prepared = prepare_pocket_prompt("Yep, I can hear you.").expect("non-empty");
-        assert_eq!(
-            build_generation_extra(&prepared),
-            None,
-            "long prompts must not override any LM knob"
-        );
-    }
-
-    #[test]
-    fn build_extra_never_lowers_frames_after_eos_for_any_word_count() {
-        // Sweep a range of prompt lengths and assert the `extra` map (when
-        // present) never carries a `frames_after_eos` override that's lower
-        // than the upstream sherpa-onnx default. Implemented as a structural
-        // check — we just never set the key — but worth a property test in
-        // case someone reintroduces the override in the future.
-        let prompts: &[&str] = &[
-            "hi",
-            "hi there",
-            "yes please",
-            "one two three four",
-            "one two three four five",
-            "a slightly longer reply, hopefully fine",
-            "This is a multi-clause sentence. It has two parts.",
-            "really really really really really long prompt with lots of words just to be sure",
-        ];
-        for &p in prompts {
-            let prepared = prepare_pocket_prompt(p).expect("non-empty");
-            if let Some(extra) = build_generation_extra(&prepared) {
-                if let Some(v) = extra.get("frames_after_eos") {
-                    let n = v.as_i64().expect("frames_after_eos should be int");
-                    assert!(
-                        n >= SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT as i64,
-                        "prompt {p:?} set frames_after_eos={n}, below upstream default of {SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn short_prompt_max_frames_is_below_upstream_default() {
-        // Sanity: the override only ever *lowers* the cap, never raises it.
-        const {
-            assert!(SHORT_PROMPT_MAX_FRAMES < SHERPA_ONNX_MAX_FRAMES_DEFAULT);
-        }
-        // …and is still large enough for a one-to-four-word reply. At Mimi's
-        // 12.5 Hz frame rate, 100 frames = 8 s, which is roomy.
-        const {
-            assert!(SHORT_PROMPT_MAX_FRAMES >= 50, "would risk truncation");
-        }
+        assert_eq!(out.text, "I'm happy.");
     }
 }

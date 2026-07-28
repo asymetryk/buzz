@@ -38,19 +38,13 @@ use sha2::{Digest, Sha256};
 /// Computed from a known-good download. Update when upgrading model versions.
 const STT_ARCHIVE_SHA256: &str = "17f945007b52ccd8b7200ffc7c5652e9e8e961dfdf479cefcabd06cf5703630b";
 
-/// HuggingFace base URL for the sherpa-onnx Pocket TTS fp32 repackage.
+/// HuggingFace base URL for the April Pocket TTS fp32 ONNX bundle.
 ///
-/// Pinned to commit 96d1e53ce3311ca6c2c6a35e2062d36b4cec6fa3
-/// (2026-02-10) for reproducible downloads.
-///
-/// fp32 (not int8): a direct same-runtime A/B (k2-fsa/sherpa-onnx#3172)
-/// found the ONNX int8 quantization audibly degraded Pocket TTS output and
-/// that fp32 "significantly improved quality even at 1 step". The runtime
-/// bundle grows from ~189 MB to ~473 MB; encoder, text conditioner, both
-/// JSON tables, and LICENSE are byte-identical between the two repos — only
-/// the three quantized sessions (lm_main, lm_flow, decoder) change.
+/// Pinned to KevinAHM/pocket-tts-onnx commit
+/// 58a6d00cf13d239b6748cb0769f35c580a8f606c (2026-04-21) for reproducible
+/// downloads. This is the full-precision `english_2026-04` bundle.
 const POCKET_HF_BASE: &str =
-    "https://huggingface.co/csukuangfj2/sherpa-onnx-pocket-tts-2026-01-26/resolve/96d1e53ce3311ca6c2c6a35e2062d36b4cec6fa3";
+    "https://huggingface.co/KevinAHM/pocket-tts-onnx/resolve/58a6d00cf13d239b6748cb0769f35c580a8f606c/onnx/english_2026-04";
 
 /// Reference voice WAV: "Mary (f, conversation)" from the Kyutai TTS demo
 /// voice set — VCTK speaker p333, ai-coustics-enhanced. Pinned to
@@ -68,13 +62,14 @@ const POCKET_REFERENCE_WAV_URL: &str =
 /// Computed from known-good pinned downloads. Update when upgrading model versions.
 #[rustfmt::skip]
 const TTS_FILE_HASHES: &[(&str, &str)] = &[
-    ("decoder.onnx",          "f267880fde6c58b17b0a8f3647eaf8dcfad321f833f32d583ebc2fb2d1a15f10"),
-    ("encoder.onnx",          "e8f2f6d301ffb96e398b138a7dc6d3038622d236044636b73d920bab85890260"),
-    ("lm_flow.onnx",          "79c013a554a54e63319c33c0cc8830cbbedc9b7e448ae7e26f7923ae11f9873e"),
-    ("lm_main.onnx",          "255d1a9263c5abdf36034abfc19c11d21cc5f40f0f87d8361288e972cbd5c578"),
-    ("text_conditioner.onnx", "0b84e837d7bfaf2c896627b03e3f080320309f37f4fc7df7698c644f7ba5e6b1"),
-    ("vocab.json",            "6fb646346cf931016f70c4921aab0900ce7a304b893cb02135c74e294abfea01"),
-    ("token_scores.json",     "5be2f278caf9b9800741f0fd82bff677f4943ec764c356f907213434b622d958"),
+    ("bundle.json",           "bab643150f437f37df080a710520ff39ed9ebd9a339f8ebdc739f7eddfc28b3f"),
+    ("bos_before_voice.npy",  "f46edf4f7007b7ba4ea58831f49d003e59e167b4641c44bb3addfe9231a780b1"),
+    ("flow_lm_flow.onnx",     "085d239f68897e28fb06e95c743738ad8b8c092ee6dc55f5491313e81ff08062"),
+    ("flow_lm_main.onnx",     "6d18315e2c33ca3e3aa4a4e3dca22f56d007fd823127e24948b37695bf54190f"),
+    ("mimi_decoder.onnx",     "86f038caa02a96a0ff9c25526a0ff43a4906c418197ed72d3e30f720ac7ce802"),
+    ("mimi_encoder.onnx",     "853e2ca623b8782d94c3745ec6133bfdff7ce33d9b11128bd29ea03f28d76e3d"),
+    ("text_conditioner.onnx", "4ecee995fb69f85c7a7493d11f7b5ee15d9950facc7ab3f5c9c49ef1e03847bb"),
+    ("tokenizer.model",       "d461765ae179566678c93091c5fa6f2984c31bbe990bf1aa62d92c64d91bc3f6"),
     ("LICENSE",               "fe7b4ce83b8381cc5b216bbb4af73c570688d1b819c73bbaed8ca401f4677cd6"),
     ("reference_sample.wav",  "a35b0468382218e9f37a9a7494d1e4b74deaf18d7ced22265b4e325bb55c183f"),
 ];
@@ -98,9 +93,10 @@ const STT_MODEL_VERSION: &str = "2";
 /// from kyutai/tts-voices. The hash mismatch on `reference_sample.wav` would
 /// fail readiness on its own, but the manifest bump makes the re-download
 /// reason explicit and skips the failing-then-re-fetching transient state.
-/// Bumped "2" → "3" for the int8 → fp32 model swap (see `POCKET_HF_BASE`):
-/// existing int8 installs must re-download the suffixless fp32 sessions.
-const TTS_MODEL_VERSION: &str = "3";
+/// Bumped "2" → "3" for the int8 → fp32 January model swap.
+/// Bumped "3" → "4" for the April bundle. Existing January installs stay
+/// usable until the fully verified April directory is atomically installed.
+const TTS_MODEL_VERSION: &str = "4";
 
 /// Filename for the version manifest written alongside model files.
 const MANIFEST_FILENAME: &str = ".buzz-model-manifest";
@@ -111,7 +107,7 @@ const MANIFEST_FILENAME: &str = ".buzz-model-manifest";
 const MAX_STT_DOWNLOAD_BYTES: u64 = 200 * 1024 * 1024;
 
 /// Maximum expected Pocket TTS file size (400 MB per file — largest is
-/// `lm_main.onnx` at ~303 MB fp32).
+/// `flow_lm_main.onnx` at ~303 MB fp32).
 const MAX_TTS_FILE_BYTES: u64 = 400 * 1024 * 1024;
 
 /// NVIDIA Parakeet TDT-CTC 110M (English, int8) — packaged for sherpa-onnx by
@@ -181,9 +177,8 @@ Original model by Kyutai: https://huggingface.co/kyutai/pocket-tts
 Paper: Charles, Roebel, et al., Pocket TTS (arXiv:2509.06926).
 Mimi neural codec by Kyutai is bundled as part of the model.
 
-ONNX export by KevinAHM: https://huggingface.co/KevinAHM/pocket-tts-onnx
-Sherpa-onnx repackage by csukuangfj / k2-fsa:
-https://huggingface.co/csukuangfj2/sherpa-onnx-pocket-tts-2026-01-26
+April ONNX export by KevinAHM:
+https://huggingface.co/KevinAHM/pocket-tts-onnx
 
 Bundled reference voice (reference_sample.wav):
 \"Mary (f, conversation)\" preset from the Kyutai TTS demo voice catalogue
@@ -203,13 +198,14 @@ license text for full warranty disclaimer.
 
 /// All files that must be present for Pocket TTS to be considered ready.
 const TTS_EXPECTED_FILES: &[&str] = &[
-    "decoder.onnx",
-    "encoder.onnx",
-    "lm_flow.onnx",
-    "lm_main.onnx",
+    "bundle.json",
+    "bos_before_voice.npy",
+    "flow_lm_flow.onnx",
+    "flow_lm_main.onnx",
+    "mimi_decoder.onnx",
+    "mimi_encoder.onnx",
     "text_conditioner.onnx",
-    "vocab.json",
-    "token_scores.json",
+    "tokenizer.model",
     "LICENSE",
     "reference_sample.wav",
     TTS_LICENSE_FILE_NAME,
@@ -453,6 +449,22 @@ impl ModelSlot {
         self.just_ready.swap(false, Ordering::AcqRel)
     }
 
+    /// Restore the previous verified directory if the process stopped between
+    /// the backup and install renames. This makes an interrupted model upgrade
+    /// deterministic and preserves the still-usable January cache.
+    fn recover_interrupted_install(&self, models_dir: &Path) {
+        let final_dir = self.model_dir(models_dir);
+        let backup_dir = final_dir.with_extension("old");
+        if !final_dir.exists() && backup_dir.exists() {
+            if let Err(error) = std::fs::rename(&backup_dir, &final_dir) {
+                eprintln!(
+                    "buzz-desktop: could not restore interrupted {} install: {error}",
+                    self.dir_name
+                );
+            }
+        }
+    }
+
     /// Spawn a background download task if not already ready or downloading.
     fn start_download<F, Fut>(
         &self,
@@ -561,11 +573,14 @@ impl ModelManager {
     /// Returns `None` if the home directory cannot be resolved.
     pub fn new() -> Option<Self> {
         let models_dir = dirs::home_dir()?.join(".buzz").join("models");
-        Some(Self {
+        let manager = Self {
             models_dir,
             stt: ModelSlot::new(STT_MODEL_DIR_NAME, STT_EXPECTED_FILES, STT_MODEL_VERSION),
             tts: ModelSlot::new(TTS_MODEL_DIR_NAME, TTS_EXPECTED_FILES, TTS_MODEL_VERSION),
-        })
+        };
+        manager.stt.recover_interrupted_install(&manager.models_dir);
+        manager.tts.recover_interrupted_install(&manager.models_dir);
+        Some(manager)
     }
 
     // ── STT accessors ────────────────────────────────────────────────────────
@@ -638,7 +653,7 @@ impl ModelManager {
         }
     }
 
-    /// Start a background Pocket TTS download (~189 MB). No-op if already ready or downloading.
+    /// Start a background Pocket TTS download. No-op if already ready or downloading.
     pub fn start_tts_download(&self, http_client: reqwest::Client) {
         let manager = self.clone();
         self.tts.start_download(
@@ -755,7 +770,7 @@ impl ModelManager {
     ///
     /// Downloads files into `~/.buzz/models/pocket-tts/`:
     ///   - five ONNX sessions (Pocket TTS + Mimi codec)
-    ///   - `vocab.json` / `token_scores.json` for sherpa-onnx text conditioning
+    ///   - April bundle metadata, SentencePiece tokenizer, and learned voice BOS
     ///   - upstream `LICENSE` plus Buzz's `MODEL_LICENSE.txt` attribution sidecar
     ///   - `reference_sample.wav` as the bundled default voice
     ///
@@ -769,13 +784,14 @@ impl ModelManager {
         fresh_temp_dir(&temp_dir).await?;
 
         let model_files = [
-            "decoder.onnx",
-            "encoder.onnx",
-            "lm_flow.onnx",
-            "lm_main.onnx",
+            "bundle.json",
+            "bos_before_voice.npy",
+            "flow_lm_flow.onnx",
+            "flow_lm_main.onnx",
+            "mimi_decoder.onnx",
+            "mimi_encoder.onnx",
             "text_conditioner.onnx",
-            "vocab.json",
-            "token_scores.json",
+            "tokenizer.model",
             "LICENSE",
         ];
         let mut downloads: Vec<(String, &'static str)> = model_files
@@ -950,5 +966,23 @@ mod tests {
 
         std::fs::remove_file(model_dir.join(TTS_LICENSE_FILE_NAME)).expect("remove sidecar");
         assert!(!slot.is_ready(temp.path()));
+    }
+
+    #[test]
+    fn interrupted_install_restores_previous_model_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let slot = ModelSlot::new(TTS_MODEL_DIR_NAME, TTS_EXPECTED_FILES, TTS_MODEL_VERSION);
+        let backup_dir = temp.path().join("pocket-tts.old");
+        std::fs::create_dir_all(&backup_dir).expect("create backup");
+        std::fs::write(backup_dir.join("sentinel"), b"january").expect("write sentinel");
+
+        slot.recover_interrupted_install(temp.path());
+
+        assert_eq!(
+            std::fs::read(temp.path().join(TTS_MODEL_DIR_NAME).join("sentinel"))
+                .expect("restored sentinel"),
+            b"january"
+        );
+        assert!(!backup_dir.exists());
     }
 }

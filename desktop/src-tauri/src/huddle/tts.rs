@@ -101,13 +101,13 @@ const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 /// names chunk stitching as the reliability lever). Our previous
 /// sentence-per-call path created ~2–4× more seams than upstream.
 ///
-/// We don't ship the SentencePiece tokenizer, so 50 tokens is approximated
-/// with a character budget. The bundled 4k-entry vocab averages ~4 chars per
-/// token, but usage-weighted English text leans on short common tokens, so
-/// the effective ratio is ~2–4 chars/token and 200 chars ≈ 60–100 tokens —
+/// Chunk grouping happens at the pipeline boundary, before the April engine's
+/// SentencePiece tokenizer runs, so 50 tokens remains approximated with a
+/// character budget. The bundled 4k-entry vocab averages ~4 chars per token,
+/// but usage-weighted English text leans on short common tokens, so the
+/// effective ratio is ~2–4 chars/token and 200 chars ≈ 60–100 tokens —
 /// modestly above upstream's 50, deliberately: erring large means fewer
-/// seams, and even ~100 tokens is far below the model's 500-LM-step (~40 s)
-/// ceiling. Do not shrink this budget to chase an exact 50-token match.
+/// seams. Do not shrink this budget to chase an exact 50-token match.
 const MAX_CHUNK_CHARS: usize = 200;
 
 /// Silence inserted between sentences by the TTS pipeline (seconds).
@@ -697,7 +697,6 @@ fn apply_fade_out(samples: &mut [f32]) {
 /// the synthesized buffer can begin with speech within the first millisecond,
 /// so the playback layer must provide the device/mixer cushion.
 /// To keep the audible gap unchanged, the trailing silence after this chunk is
-/// shortened by the same amount (`silence_buf_len - SENTENCE_LEAD_IN_SAMPLES`):
 /// sentence N contributes 80 ms of post-speech silence and sentence N+1
 /// contributes the remaining 20 ms of pre-speech cushion.
 ///
@@ -735,7 +734,7 @@ fn build_sentence_append_buffer(
 /// joins the current chunk while the combined length stays within
 /// `max_chars`; otherwise it starts a new chunk. A single sentence longer
 /// than `max_chars` becomes its own chunk unsplit — Pocket TTS handles long
-/// single sentences fine (the ceiling is the 500-LM-step default), it's the
+/// single sentences with its token-count-derived generation limit; it's the
 /// *seams* we're minimizing.
 ///
 /// Sentences within a chunk are joined with a single space; sentence-ending
