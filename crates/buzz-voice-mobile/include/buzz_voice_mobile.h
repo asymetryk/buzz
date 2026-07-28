@@ -17,8 +17,10 @@ typedef struct BuzzVoicePcm {
 } BuzzVoicePcm;
 
 BuzzVoiceEngineResult buzz_voice_engine_create(const char *model_dir);
+char *buzz_voice_prepare_chunks_json(const char *text);
 BuzzVoicePcm buzz_voice_engine_synthesize(void *engine, const char *text);
 void buzz_voice_engine_cancel(void *engine);
+void buzz_voice_engine_reset_cancel(void *engine);
 void buzz_voice_engine_destroy(void *engine);
 void buzz_voice_pcm_free(BuzzVoicePcm pcm);
 void buzz_voice_string_free(char *value);

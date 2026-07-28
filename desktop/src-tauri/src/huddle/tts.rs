@@ -47,7 +47,7 @@ use std::{
 };
 
 use super::pocket::{load_text_to_speech, load_voice_style, SAMPLE_RATE, VOICE_FILE_EXT};
-use super::preprocessing::{preprocess_for_tts, split_sentences};
+use super::preprocessing::{prepare_tts_chunks, shape_tts_chunk};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -76,6 +76,7 @@ const SYNTH_STEPS: usize = 1;
 /// abruptly. **No fade-in is applied** — see `apply_fade_out` for the
 /// rationale and `examples/pocket_onset_probe.rs` for the measurement that
 /// motivated removing the leading fade.
+#[cfg(test)]
 const FADE_OUT_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
 
 /// Length of the zero-sample cushion prepended before each synthesized
@@ -89,6 +90,7 @@ const FADE_OUT_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
 /// samples is enough to cover a CoreAudio buffer turnover without being audible
 /// as latency. At sentence boundaries this lead-in is budgeted out of the
 /// existing inter-sentence pause, so it does not lengthen multi-sentence gaps.
+#[cfg(test)]
 const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 
 /// Approximate character budget for one synthesis chunk.
@@ -108,12 +110,6 @@ const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 /// modestly above upstream's 50, deliberately: erring large means fewer
 /// seams, and even ~100 tokens is far below the model's 500-LM-step (~40 s)
 /// ceiling. Do not shrink this budget to chase an exact 50-token match.
-const MAX_CHUNK_CHARS: usize = 200;
-
-/// Silence inserted between sentences by the TTS pipeline (seconds).
-/// Injected as a silent buffer between each synthesized sentence chunk.
-const INTER_SENTENCE_SILENCE: f32 = 0.1;
-
 // ── Public pipeline handle ────────────────────────────────────────────────────
 
 /// Handle to the running TTS pipeline.
@@ -417,7 +413,6 @@ fn tts_worker(
     // `tts_active` lifecycle: set on the first append while idle, cleared
     // whenever the player has fully drained — either in the idle timeout
     // arm or on item receipt before synthesis begins.
-    let silence_buf_len = (INTER_SENTENCE_SILENCE * SAMPLE_RATE as f32) as usize;
     // `first_append` = "no audio queued since the player last went idle".
     // Flipped by `build_sentence_append_buffer` on the first real append; the
     // idle branch below uses it to decide when to drop `tts_active` and to
@@ -485,24 +480,14 @@ fn tts_worker(
             first_append = true;
         }
 
-        // Preprocess text.
-        let text = preprocess_for_tts(&raw_text);
-        if text.is_empty() {
-            continue;
-        }
-
-        // Split into sentences, then group into synthesis chunks: the first
+        // Prepare and group synthesis chunks: the first
         // sentence stays alone (fast time-to-first-audio), the rest pack
         // greedily up to MAX_CHUNK_CHARS. Each chunk is one `generate()`
         // call; playback of chunk N overlaps synthesis of chunk N+1
         // (lookahead pipelining). Grouping matches upstream's ~50-token
         // chunking and halves the exposed prosody seams on multi-sentence
         // replies — see MAX_CHUNK_CHARS.
-        let sentences: Vec<String> = split_sentences(&text)
-            .into_iter()
-            .filter(|s| !s.trim().is_empty())
-            .collect();
-        let chunks = group_sentences_into_chunks(&sentences, MAX_CHUNK_CHARS);
+        let chunks = prepare_tts_chunks(&raw_text);
 
         for chunk in &chunks {
             if handle_cancel_or_shutdown(
@@ -523,19 +508,13 @@ fn tts_worker(
 
             match engine.synth_chunk(text, "en", &style, SYNTH_STEPS) {
                 Ok(samples) if !samples.is_empty() => {
-                    let mut audio = clamp_to_full_scale(samples);
-                    // Fade-out only — fading-in would attenuate the consonant
-                    // onset (see `apply_fade_out` docstring + the
-                    // 2026-05-18 "first little sound is missing" regression).
-                    apply_fade_out(&mut audio);
-
                     // Build one contiguous buffer per synthesized sentence:
                     // lead-in cushion + audio + trailing gap. Keeping this as
                     // a single rodio source preserves the original queue/drain
                     // semantics (one append per sentence) while still giving
                     // every chunk a quiet device warm-up window.
-                    let buf =
-                        build_sentence_append_buffer(&mut first_append, audio, silence_buf_len);
+                    let buf = shape_tts_chunk(samples);
+                    first_append = false;
 
                     // Check-and-append under `player_ops`, serialized with
                     // the monitor: a barge-in may have arrived during
@@ -655,6 +634,7 @@ fn lock_player_ops(ops: &Mutex<()>) -> MutexGuard<'_, ()> {
 /// was calibrated on a single anomalously-quiet bench utterance (peak 0.076)
 /// and clipped 13–34% of samples on real speech ("blown out", 2026-06-12).
 /// The clamp alone remains as the safety net against outlier transients.
+#[cfg(test)]
 fn clamp_to_full_scale(samples: Vec<f32>) -> Vec<f32> {
     samples.into_iter().map(|s| s.clamp(-1.0, 1.0)).collect()
 }
@@ -681,6 +661,7 @@ fn clamp_to_full_scale(samples: Vec<f32>) -> Vec<f32> {
 /// no fade-in is needed. The OS audio device gets its quiet ramp-up window
 /// from `SENTENCE_LEAD_IN_SAMPLES` instead, inserted as pure silence before
 /// each sentence buffer.
+#[cfg(test)]
 fn apply_fade_out(samples: &mut [f32]) {
     let len = samples.len();
     let fade = FADE_OUT_SAMPLES.min(len / 2);
@@ -710,6 +691,7 @@ fn apply_fade_out(samples: &mut [f32]) {
 /// The worker uses it in the idle branch of the main loop to distinguish
 /// "never queued anything since last drain" from "drained after speaking",
 /// which controls when `tts_active` is released and the lead-in re-armed.
+#[cfg(test)]
 fn build_sentence_append_buffer(
     first_append: &mut bool,
     audio: Vec<f32>,
@@ -741,31 +723,9 @@ fn build_sentence_append_buffer(
 /// Sentences within a chunk are joined with a single space; sentence-ending
 /// punctuation is preserved by `split_sentences`, so the model sees natural
 /// multi-sentence prose — the same shape upstream's ~50-token chunker feeds it.
+#[cfg(test)]
 fn group_sentences_into_chunks(sentences: &[String], max_chars: usize) -> Vec<String> {
-    let mut chunks: Vec<String> = Vec::new();
-    for (i, sentence) in sentences.iter().enumerate() {
-        let sentence = sentence.trim();
-        if sentence.is_empty() {
-            continue;
-        }
-        if i == 0 || chunks.is_empty() {
-            chunks.push(sentence.to_string());
-            continue;
-        }
-        // Never merge into the first chunk — it's the latency-critical one.
-        let can_merge = chunks.len() > 1
-            && chunks
-                .last()
-                .is_some_and(|c| c.len() + 1 + sentence.len() <= max_chars);
-        if can_merge {
-            let last = chunks.last_mut().expect("non-empty checked above");
-            last.push(' ');
-            last.push_str(sentence);
-        } else {
-            chunks.push(sentence.to_string());
-        }
-    }
-    chunks
+    buzz_voice_pkg::preparation::group_sentences_into_chunks(sentences, max_chars)
 }
 
 // drain_until_shutdown lives in super (huddle/mod.rs) — shared with stt.rs.

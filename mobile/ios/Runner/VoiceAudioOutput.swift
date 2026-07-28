@@ -82,17 +82,22 @@ final class VoiceAudioOutput: NSObject, AVAudioPlayerDelegate {
     let session = AVAudioSession.sharedInstance()
     try Self.configureAudioSession(session)
     try session.setActive(true)
-    let nextPlayer = try AVAudioPlayer(data: Self.waveData(pcm: pcm, sampleRate: sampleRate))
-    nextPlayer.delegate = self
-    nextPlayer.prepareToPlay()
-    guard nextPlayer.play() else {
-      throw NSError(
-        domain: "BuzzVoice",
-        code: 1,
-        userInfo: [NSLocalizedDescriptionKey: "Unable to start voice playback."]
-      )
+    do {
+      let nextPlayer = try AVAudioPlayer(data: Self.waveData(pcm: pcm, sampleRate: sampleRate))
+      nextPlayer.delegate = self
+      nextPlayer.prepareToPlay()
+      guard nextPlayer.play() else {
+        throw NSError(
+          domain: "BuzzVoice",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey: "Unable to start voice playback."]
+        )
+      }
+      player = nextPlayer
+    } catch {
+      try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+      throw error
     }
-    player = nextPlayer
   }
 
   static func configureAudioSession(_ session: AVAudioSession) throws {
@@ -111,12 +116,23 @@ final class VoiceAudioOutput: NSObject, AVAudioPlayerDelegate {
   }
 
   func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    guard self.player === player else { return }
     self.player = nil
     try? AVAudioSession.sharedInstance().setActive(
       false,
       options: [.notifyOthersOnDeactivation]
     )
     channel.invokeMethod(flag ? "completed" : "error", arguments: nil)
+  }
+
+  func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+    guard self.player === player else { return }
+    self.player = nil
+    try? AVAudioSession.sharedInstance().setActive(
+      false,
+      options: [.notifyOthersOnDeactivation]
+    )
+    channel.invokeMethod("error", arguments: error?.localizedDescription)
   }
 
   private func observeAudioLifecycle() {

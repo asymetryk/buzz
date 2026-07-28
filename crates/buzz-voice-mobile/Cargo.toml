@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Minimal mobile C ABI for Buzz Pocket TTS"
 
 [lib]
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = ["static"]
@@ -17,3 +17,4 @@ shared = ["buzz-voice/shared"]
 
 [dependencies]
 buzz-voice = { path = "../buzz-voice", default-features = false }
+serde_json = { workspace = true }

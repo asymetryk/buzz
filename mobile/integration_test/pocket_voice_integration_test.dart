@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:buzz/shared/voice/pocket_model_downloader.dart';
 import 'package:buzz/shared/voice/pocket_voice_worker.dart';
+import 'package:buzz/shared/voice/voice_audio_output.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -57,6 +58,18 @@ void main() {
           first.synthesisTime.inMicroseconds /
           Duration.microsecondsPerSecond /
           audioSeconds;
+      final output = PlatformVoiceAudioOutput();
+      final playbackCompleted = output.events.firstWhere(
+        (event) => event == VoiceAudioEvent.completed,
+      );
+      final playbackClock = Stopwatch()..start();
+      await output.play(bytes, first.sampleRate);
+      await playbackCompleted.timeout(const Duration(seconds: 30));
+      playbackClock.stop();
+      expect(
+        playbackClock.elapsedMilliseconds,
+        greaterThanOrEqualTo((audioSeconds * 800).floor()),
+      );
 
       final warmClock = Stopwatch()..start();
       worker.synthesize(2, 'The engine stays warm for the next response.');
@@ -95,6 +108,7 @@ void main() {
         'synthesis_ms=${first.synthesisTime.inMilliseconds} '
         'audio_s=${audioSeconds.toStringAsFixed(3)} '
         'rtf=${rtf.toStringAsFixed(3)} '
+        'playback_ms=${playbackClock.elapsedMilliseconds} '
         'warm_pcm_ms=${warmClock.elapsedMilliseconds} '
         'cancel_ms=${cancelClock.elapsedMilliseconds} '
         'download_ms=${downloadTime?.inMilliseconds ?? 0} '

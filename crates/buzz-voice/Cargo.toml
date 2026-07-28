@@ -16,6 +16,7 @@ shared = ["sherpa-onnx/shared"]
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-24", "ndarray", "std"] }
 ort-sys = { version = "=2.0.0-rc.12", features = ["disable-linking"] }
 rand = { workspace = true }
+regex = "1"
 sentencepiece-model = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }

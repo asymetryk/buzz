@@ -1,2 +1,2 @@
-BUZZ_VOICE_LIB_DIR = $(SRCROOT)/../.generated/voice/ios/$(PLATFORM_NAME)-arm64
+BUZZ_VOICE_LIB_DIR = $(SRCROOT)/../.generated/voice/ios/$(PLATFORM_NAME)-$(CURRENT_ARCH)
 OTHER_LDFLAGS = $(inherited) -Wl,-force_load,$(BUZZ_VOICE_LIB_DIR)/libbuzz_voice_mobile.a -lc++ -framework Accelerate -framework CoreML -framework Foundation -framework Metal -framework QuartzCore -framework Security

@@ -139,8 +139,9 @@ internal class VoiceAudioOutput(
                     .setBufferSizeInBytes(max(minimum, 32 * 1024))
                     .build()
                     .also {
-                        check(it.state == AudioTrack.STATE_INITIALIZED) {
-                            "Unable to initialize voice audio."
+                        if (it.state != AudioTrack.STATE_INITIALIZED) {
+                            it.release()
+                            error("Unable to initialize voice audio.")
                         }
                     }
             } catch (error: Exception) {
@@ -149,35 +150,58 @@ internal class VoiceAudioOutput(
             }
         track = nextTrack
         val currentGeneration = generation.incrementAndGet()
-        nextTrack.play()
+        try {
+            nextTrack.play()
+        } catch (error: Exception) {
+            track = null
+            nextTrack.release()
+            abandonFocus()
+            throw error
+        }
         thread(name = "buzz-pocket-playback") {
             var offset = 0
-            while (offset < pcm.size && generation.get() == currentGeneration) {
-                val written = nextTrack.write(
-                    pcm,
-                    offset,
-                    pcm.size - offset,
-                    AudioTrack.WRITE_BLOCKING,
-                )
-                if (written <= 0) break
-                offset += written
-            }
-            val complete = offset == pcm.size
-            if (complete) {
-                val targetFrames = pcm.size.toLong() / 2
-                while (generation.get() == currentGeneration) {
-                    val playedFrames =
-                        runCatching {
-                            nextTrack.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
-                        }.getOrNull() ?: break
-                    if (playedFrames >= targetFrames) break
-                    Thread.sleep(5)
+            var complete = false
+            try {
+                while (offset < pcm.size && generation.get() == currentGeneration) {
+                    val written = nextTrack.write(
+                        pcm,
+                        offset,
+                        pcm.size - offset,
+                        AudioTrack.WRITE_BLOCKING,
+                    )
+                    if (written <= 0) break
+                    offset += written
                 }
+                complete = offset == pcm.size
+                if (complete) {
+                    val targetFrames = pcm.size.toLong() / 2
+                    val deadlineNanos =
+                        System.nanoTime() +
+                            (targetFrames * 1_000_000_000L / sampleRate) +
+                            2_000_000_000L
+                    var drained = false
+                    while (
+                        generation.get() == currentGeneration &&
+                            System.nanoTime() < deadlineNanos
+                    ) {
+                        val playedFrames =
+                            runCatching {
+                                nextTrack.playbackHeadPosition.toLong() and 0xFFFF_FFFFL
+                            }.getOrNull() ?: break
+                        if (playedFrames >= targetFrames) {
+                            drained = true
+                            break
+                        }
+                        Thread.sleep(5)
+                    }
+                    complete = drained
+                }
+            } catch (_: Exception) {
+                complete = false
             }
             mainHandler.post {
                 if (generation.get() == currentGeneration && track === nextTrack) {
-                    nextTrack.stop()
-                    nextTrack.release()
+                    releaseTrack(nextTrack)
                     track = null
                     abandonFocus()
                     channel.invokeMethod(
@@ -196,12 +220,7 @@ internal class VoiceAudioOutput(
     private fun stop(notify: String?) {
         if (track == null && !hasFocus) return
         generation.incrementAndGet()
-        track?.run {
-            pause()
-            flush()
-            stop()
-            release()
-        }
+        track?.let(::releaseTrack)
         track = null
         abandonFocus()
         if (notify != null) channel.invokeMethod(notify, null)
@@ -244,6 +263,13 @@ internal class VoiceAudioOutput(
         }
         focusRequest = null
         hasFocus = false
+    }
+
+    private fun releaseTrack(audioTrack: AudioTrack) {
+        runCatching { audioTrack.pause() }
+        runCatching { audioTrack.flush() }
+        runCatching { audioTrack.stop() }
+        runCatching { audioTrack.release() }
     }
 
     private companion object {

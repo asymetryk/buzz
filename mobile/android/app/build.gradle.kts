@@ -92,6 +92,11 @@ android {
         versionName = flutter.versionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resValue("string", "app_name", "Buzz")
+        ndk {
+            // Native Pocket voice artifacts are built for device arm64 and
+            // emulator x86_64. Do not publish an installable ABI without them.
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     sourceSets["main"].jniLibs.srcDir("../../.generated/voice/android/jniLibs")

@@ -20,15 +20,6 @@ class PocketVoiceConversation {
     for (final event in events) {
       if (_seen.add(event.id)) unseen.add(event);
     }
-    if (_seen.length > 1024) {
-      final retained = events.reversed
-          .take(512)
-          .map((event) => event.id)
-          .toSet();
-      _seen
-        ..clear()
-        ..addAll(retained);
-    }
     if (!_initialized) {
       _initialized = true;
       return const [];

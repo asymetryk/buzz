@@ -18,13 +18,21 @@ class PocketWorkerAudio extends PocketWorkerResponse {
   final TransferableTypedData data;
   final int sampleRate;
   final Duration synthesisTime;
+  final bool isLast;
 
   const PocketWorkerAudio({
     required this.generation,
     required this.data,
     required this.sampleRate,
     required this.synthesisTime,
+    required this.isLast,
   });
+}
+
+class PocketWorkerDone extends PocketWorkerResponse {
+  final int generation;
+
+  const PocketWorkerDone(this.generation);
 }
 
 class PocketWorkerFailure extends PocketWorkerResponse {
@@ -61,9 +69,11 @@ class PocketVoiceWorker {
   int? _handle;
   PocketVoiceFfi? _mainFfi;
   ReceivePort? _receive;
+  Completer<void>? _activeSynthesis;
+  int? _activeGeneration;
 
   Stream<PocketWorkerResponse> get responses => _responses.stream;
-  int? get handle => _handle;
+  bool get isReady => _commands != null;
 
   Future<void> start(String modelPath) async {
     if (_isolate != null) return;
@@ -84,18 +94,33 @@ class PocketVoiceWorker {
       _isolate = null;
       receive.close();
       _receive = null;
+      _commands = null;
       throw StateError((first.$2 as PocketWorkerFailure).message);
     }
     final ready = first.$2 as PocketWorkerReady;
     _handle = ready.handle;
     _mainFfi = PocketVoiceFfi();
     messages.listen((message) {
-      if (message is PocketWorkerResponse) _responses.add(message);
+      if (message is! PocketWorkerResponse) return;
+      if (_finishesActiveSynthesis(message)) {
+        _activeSynthesis?.complete();
+        _activeSynthesis = null;
+        _activeGeneration = null;
+      }
+      _responses.add(message);
     });
   }
 
   void synthesize(int generation, String text) {
-    _commands?.send(_Synthesize(generation, text));
+    if (_commands == null) {
+      throw StateError('Pocket worker is not ready.');
+    }
+    if (_activeSynthesis != null) {
+      throw StateError('Pocket worker already has an active synthesis.');
+    }
+    _activeGeneration = generation;
+    _activeSynthesis = Completer<void>();
+    _commands!.send(_Synthesize(generation, text));
   }
 
   void cancel() {
@@ -103,29 +128,44 @@ class PocketVoiceWorker {
     if (handle != null) _mainFfi?.cancel(handle);
   }
 
+  Future<void> cancelAndWait() async {
+    final active = _activeSynthesis;
+    if (active == null) return;
+    cancel();
+    await active.future;
+  }
+
   Future<void> dispose() async {
     if (_responses.isClosed) return;
-    cancel();
-    final stopped = _responses.stream.firstWhere(
-      (response) => response is PocketWorkerStopped,
-    );
+    await cancelAndWait();
     final commands = _commands;
     _commands = null;
     _handle = null;
     _mainFfi = null;
-    commands?.send(const _Dispose());
     if (commands != null) {
-      try {
-        await stopped.timeout(const Duration(seconds: 10));
-      } on TimeoutException {
-        _isolate?.kill();
-      }
+      final stopped = _responses.stream.firstWhere(
+        (response) => response is PocketWorkerStopped,
+      );
+      commands.send(const _Dispose());
+      await stopped;
     }
     _isolate?.kill();
     _isolate = null;
     _receive?.close();
     _receive = null;
     await _responses.close();
+  }
+
+  bool _finishesActiveSynthesis(PocketWorkerResponse response) {
+    final activeGeneration = _activeGeneration;
+    if (activeGeneration == null) return false;
+    return switch (response) {
+      PocketWorkerAudio(:final generation, :final isLast) =>
+        generation == activeGeneration && isLast,
+      PocketWorkerDone(:final generation) => generation == activeGeneration,
+      PocketWorkerFailure(:final generation) => generation == activeGeneration,
+      _ => false,
+    };
   }
 }
 
@@ -145,18 +185,27 @@ void _workerMain((SendPort, String) startup) {
   commands.listen((command) {
     switch (command) {
       case _Synthesize():
-        final stopwatch = Stopwatch()..start();
         try {
-          final pcm = ffi.synthesize(handle, command.text);
-          stopwatch.stop();
-          output.send(
-            PocketWorkerAudio(
-              generation: command.generation,
-              data: TransferableTypedData.fromList([pcm.bytes]),
-              sampleRate: pcm.sampleRate,
-              synthesisTime: stopwatch.elapsed,
-            ),
-          );
+          final chunks = ffi.prepareChunks(command.text);
+          if (chunks.isEmpty) {
+            output.send(PocketWorkerDone(command.generation));
+            return;
+          }
+          ffi.resetCancel(handle);
+          for (var index = 0; index < chunks.length; index += 1) {
+            final stopwatch = Stopwatch()..start();
+            final pcm = ffi.synthesize(handle, chunks[index]);
+            stopwatch.stop();
+            output.send(
+              PocketWorkerAudio(
+                generation: command.generation,
+                data: TransferableTypedData.fromList([pcm.bytes]),
+                sampleRate: pcm.sampleRate,
+                synthesisTime: stopwatch.elapsed,
+                isLast: index == chunks.length - 1,
+              ),
+            );
+          }
         } catch (error) {
           output.send(
             PocketWorkerFailure(

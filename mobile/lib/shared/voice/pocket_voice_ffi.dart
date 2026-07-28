@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:typed_data';
@@ -29,6 +30,10 @@ typedef _SynthDart =
     _PcmResult Function(ffi.Pointer<ffi.Void>, ffi.Pointer<Utf8>);
 typedef _CancelNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _CancelDart = void Function(ffi.Pointer<ffi.Void>);
+typedef _ResetCancelNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
+typedef _ResetCancelDart = void Function(ffi.Pointer<ffi.Void>);
+typedef _PrepareNative = ffi.Pointer<ffi.Char> Function(ffi.Pointer<Utf8>);
+typedef _PrepareDart = ffi.Pointer<ffi.Char> Function(ffi.Pointer<Utf8>);
 typedef _DestroyNative = ffi.Void Function(ffi.Pointer<ffi.Void>);
 typedef _DestroyDart = void Function(ffi.Pointer<ffi.Void>);
 typedef _FreePcmNative = ffi.Void Function(_PcmResult);
@@ -48,6 +53,8 @@ class PocketVoiceFfi {
   late final _CreateDart _create;
   late final _SynthDart _synthesize;
   late final _CancelDart _cancel;
+  late final _ResetCancelDart _resetCancel;
+  late final _PrepareDart _prepare;
   late final _DestroyDart _destroy;
   late final _FreePcmDart _freePcm;
   late final _FreeStringDart _freeString;
@@ -61,6 +68,13 @@ class PocketVoiceFfi {
     );
     _cancel = _library.lookupFunction<_CancelNative, _CancelDart>(
       'buzz_voice_engine_cancel',
+    );
+    _resetCancel = _library
+        .lookupFunction<_ResetCancelNative, _ResetCancelDart>(
+          'buzz_voice_engine_reset_cancel',
+        );
+    _prepare = _library.lookupFunction<_PrepareNative, _PrepareDart>(
+      'buzz_voice_prepare_chunks_json',
     );
     _destroy = _library.lookupFunction<_DestroyNative, _DestroyDart>(
       'buzz_voice_engine_destroy',
@@ -110,6 +124,24 @@ class PocketVoiceFfi {
   }
 
   void cancel(int handle) => _cancel(ffi.Pointer<ffi.Void>.fromAddress(handle));
+
+  void resetCancel(int handle) =>
+      _resetCancel(ffi.Pointer<ffi.Void>.fromAddress(handle));
+
+  List<String> prepareChunks(String text) {
+    final input = text.toNativeUtf8();
+    final result = _prepare(input);
+    calloc.free(input);
+    if (result == ffi.nullptr) {
+      throw StateError('Pocket text preparation returned no result.');
+    }
+    final encoded = _takeError(result);
+    final decoded = jsonDecode(encoded);
+    if (decoded is! List) {
+      throw StateError('Pocket text preparation returned invalid JSON.');
+    }
+    return decoded.cast<String>();
+  }
 
   void destroy(int handle) =>
       _destroy(ffi.Pointer<ffi.Void>.fromAddress(handle));

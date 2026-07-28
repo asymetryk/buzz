@@ -11,6 +11,7 @@ use buzz_voice::pocket::{
     load_text_to_speech, load_voice_style, PocketTts, VoiceStyle, DEFAULT_VOICE, SAMPLE_RATE,
     VOICE_FILE_EXT,
 };
+use buzz_voice::preparation::{prepare_tts_chunks, shape_tts_chunk};
 
 struct Engine {
     tts: PocketTts,
@@ -95,6 +96,11 @@ pub extern "C" fn buzz_voice_engine_create(model_dir: *const c_char) -> BuzzVoic
         Ok(value) => value,
         Err(error) => return engine_error(error),
     };
+    // Pay the model's first-generation setup cost during engine creation so
+    // the first submitted assistant sentence is not the warm-up utterance.
+    if let Err(error) = tts.synth_chunk("warmup", "en", &voice, 1) {
+        eprintln!("buzz-voice-mobile: Pocket warm-up failed: {error}");
+    }
     let engine = Box::new(Engine {
         tts,
         voice,
@@ -123,7 +129,6 @@ pub extern "C" fn buzz_voice_engine_synthesize(
     // the caller until `buzz_voice_engine_destroy`; synthesis and destroy must
     // not overlap. Cancellation only touches the atomic flag.
     let engine = unsafe { &*(engine.cast::<Engine>()) };
-    engine.cancelled.store(false, Ordering::Release);
     let cancelled = Arc::clone(&engine.cancelled);
     let samples = match engine
         .tts
@@ -141,7 +146,7 @@ pub extern "C" fn buzz_voice_engine_synthesize(
         return pcm_error("synthesis cancelled");
     }
 
-    let samples: Box<[i16]> = samples
+    let samples: Box<[i16]> = shape_tts_chunk(samples)
         .into_iter()
         .map(|sample| {
             let sample = if sample.is_finite() { sample } else { 0.0 };
@@ -158,7 +163,26 @@ pub extern "C" fn buzz_voice_engine_synthesize(
     }
 }
 
-/// Request cancellation of the current synthesis call.
+/// Prepare submitted assistant text and return an owned JSON string array.
+///
+/// The returned pointer is released with [`buzz_voice_string_free`]. A null
+/// pointer indicates invalid input or an unexpected serialization failure.
+#[no_mangle]
+pub extern "C" fn buzz_voice_prepare_chunks_json(text: *const c_char) -> *mut c_char {
+    let text = match input_string(text, "text") {
+        Ok(value) => value,
+        Err(_) => return ptr::null_mut(),
+    };
+    let json = match serde_json::to_string(&prepare_tts_chunks(&text)) {
+        Ok(value) => value,
+        Err(_) => return ptr::null_mut(),
+    };
+    CString::new(json)
+        .map(CString::into_raw)
+        .unwrap_or(ptr::null_mut())
+}
+
+/// Request cancellation of the current and subsequent synthesis calls.
 #[no_mangle]
 pub extern "C" fn buzz_voice_engine_cancel(engine: *mut c_void) {
     if engine.is_null() {
@@ -168,6 +192,17 @@ pub extern "C" fn buzz_voice_engine_cancel(engine: *mut c_void) {
     // while this atomic cancellation request is issued.
     let engine = unsafe { &*(engine.cast::<Engine>()) };
     engine.cancelled.store(true, Ordering::Release);
+}
+
+/// Clear sticky cancellation before beginning a new playback request.
+#[no_mangle]
+pub extern "C" fn buzz_voice_engine_reset_cancel(engine: *mut c_void) {
+    if engine.is_null() {
+        return;
+    }
+    // SAFETY: See `buzz_voice_engine_synthesize`.
+    let engine = unsafe { &*(engine.cast::<Engine>()) };
+    engine.cancelled.store(false, Ordering::Release);
 }
 
 /// Destroy an engine after any synthesis call has returned.
@@ -222,5 +257,18 @@ mod tests {
         assert_eq!(pcm.sample_rate, SAMPLE_RATE);
         assert!(!pcm.error.is_null());
         buzz_voice_pcm_free(pcm);
+    }
+
+    #[test]
+    fn chunk_preparation_returns_owned_json() {
+        let input = CString::new("First. Second. Third.").expect("test input");
+        let json = buzz_voice_prepare_chunks_json(input.as_ptr());
+        assert!(!json.is_null());
+        // SAFETY: The function returned a live NUL-terminated owned string.
+        let value = unsafe { CStr::from_ptr(json) }
+            .to_str()
+            .expect("UTF-8 JSON");
+        assert_eq!(value, r#"["First.","Second. Third."]"#);
+        buzz_voice_string_free(json);
     }
 }

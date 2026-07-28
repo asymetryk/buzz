@@ -21,21 +21,15 @@ class PocketModelState {
   final PocketModelPhase phase;
   final int downloaded;
   final int total;
-  final String? currentFile;
   final String? path;
   final String? message;
-  final int? requiredBytes;
-  final int? availableBytes;
 
   const PocketModelState({
     required this.phase,
     this.downloaded = 0,
     this.total = 0,
-    this.currentFile,
     this.path,
     this.message,
-    this.requiredBytes,
-    this.availableBytes,
   });
 
   double get progress => total == 0 ? 0 : downloaded / total;
@@ -78,12 +72,11 @@ class PocketModelNotifier extends Notifier<PocketModelState> {
     final downloader = ref.read(pocketModelDownloaderProvider);
     _active = downloader;
     try {
-      final directory = await downloader.install((downloaded, total, file) {
+      final directory = await downloader.install((downloaded, total, _) {
         state = PocketModelState(
           phase: PocketModelPhase.downloading,
           downloaded: downloaded,
           total: total,
-          currentFile: file,
         );
       });
       state = const PocketModelState(phase: PocketModelPhase.verifying);
@@ -98,11 +91,9 @@ class PocketModelNotifier extends Notifier<PocketModelState> {
       );
     } on PocketDownloadCancelled {
       state = const PocketModelState(phase: PocketModelPhase.cancelled);
-    } on PocketInsufficientSpace catch (error) {
+    } on PocketInsufficientSpace {
       state = PocketModelState(
         phase: PocketModelPhase.insufficientSpace,
-        requiredBytes: error.required,
-        availableBytes: error.available,
         message: 'Not enough free space for Pocket voice.',
       );
     } on FileSystemException catch (error) {
@@ -123,6 +114,4 @@ class PocketModelNotifier extends Notifier<PocketModelState> {
   }
 
   void cancel() => _active?.cancel();
-
-  Future<void> retry() => download();
 }

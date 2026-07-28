@@ -110,6 +110,7 @@ build_ios() {
   fetch_native
   build_ios_target "aarch64-apple-ios" "iphoneos" "arm64"
   build_ios_target "aarch64-apple-ios-sim" "iphonesimulator" "arm64"
+  build_ios_target "x86_64-apple-ios" "iphonesimulator" "x86_64"
 }
 
 build_ios_current() {
@@ -119,6 +120,8 @@ build_ios_current() {
   if [[ -z "$arch" || "$arch" == "undefined_arch" ]]; then
     if [[ " ${ARCHS:-} " == *" arm64 "* ]]; then
       arch="arm64"
+    elif [[ " ${ARCHS:-} " == *" x86_64 "* ]]; then
+      arch="x86_64"
     fi
   fi
   case "${platform}:${arch}" in
@@ -127,6 +130,9 @@ build_ios_current() {
       ;;
     iphonesimulator:arm64)
       build_ios_target "aarch64-apple-ios-sim" "iphonesimulator" "arm64"
+      ;;
+    iphonesimulator:x86_64)
+      build_ios_target "x86_64-apple-ios" "iphonesimulator" "x86_64"
       ;;
     *)
       echo "unsupported iOS platform/architecture: ${platform:-unset}/${arch:-unset}" >&2
@@ -152,10 +158,25 @@ build_android_abi() {
     echo "ANDROID_NDK_HOME must point at an Android NDK" >&2
     exit 1
   fi
-  local toolchain="${ndk_root}/toolchains/llvm/prebuilt/darwin-arm64"
-  if [[ ! -d "$toolchain" ]]; then
-    toolchain="${ndk_root}/toolchains/llvm/prebuilt/darwin-x86_64"
-  fi
+  local host_os
+  case "$(uname -s)" in
+    Darwin) host_os="darwin" ;;
+    Linux) host_os="linux" ;;
+    MINGW* | MSYS* | CYGWIN*) host_os="windows" ;;
+    *)
+      echo "Unsupported Android NDK host OS: $(uname -s)" >&2
+      exit 1
+      ;;
+  esac
+  local host_arch
+  case "$(uname -m)" in
+    arm64 | aarch64) host_arch="arm64" ;;
+    x86_64 | amd64) host_arch="x86_64" ;;
+    *)
+      echo "Unsupported Android NDK host architecture: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
   local api="${BUZZ_ANDROID_MIN_API:-24}"
   local clang_target
   if [[ "$abi" == "arm64-v8a" ]]; then
@@ -163,7 +184,19 @@ build_android_abi() {
   else
     clang_target="x86_64-linux-android${api}"
   fi
+  local prebuilt_root="${ndk_root}/toolchains/llvm/prebuilt"
+  local toolchain="${prebuilt_root}/${host_os}-${host_arch}"
   local linker="${toolchain}/bin/${clang_target}-clang"
+  if [[ ! -x "$linker" ]]; then
+    local candidate
+    for candidate in "${prebuilt_root}/${host_os}-"*; do
+      if [[ -x "${candidate}/bin/${clang_target}-clang" ]]; then
+        toolchain="$candidate"
+        linker="${candidate}/bin/${clang_target}-clang"
+        break
+      fi
+    done
+  fi
   if [[ ! -x "$linker" ]]; then
     echo "Android linker not found: $linker" >&2
     exit 1

@@ -17,7 +17,6 @@ class PocketModelArtifact {
 
 const pocketModelVersion = '3';
 const pocketModelRuntimeBytes = 473251634;
-const pocketModelDownloadBytes = 473270289;
 const _pocketModelBase =
     'https://huggingface.co/csukuangfj2/'
     'sherpa-onnx-pocket-tts-2026-01-26/resolve/'
@@ -91,13 +90,26 @@ Pocket TTS
 Licensed under the Creative Commons Attribution 4.0 International License
 (CC-BY-4.0). License text: https://creativecommons.org/licenses/by/4.0/
 
-Original model: https://huggingface.co/kyutai/pocket-tts
-ONNX export: https://huggingface.co/KevinAHM/pocket-tts-onnx
-Sherpa-onnx repackage:
+Original model by Kyutai: https://huggingface.co/kyutai/pocket-tts
+Paper: Charles, Roebel, et al., Pocket TTS (arXiv:2509.06926).
+Mimi neural codec by Kyutai is bundled as part of the model.
+
+ONNX export by KevinAHM: https://huggingface.co/KevinAHM/pocket-tts-onnx
+Sherpa-onnx repackage by csukuangfj / k2-fsa:
 https://huggingface.co/csukuangfj2/sherpa-onnx-pocket-tts-2026-01-26
 
-Reference voice: Mary (VCTK p333, enhanced by ai-coustics), from
-https://huggingface.co/kyutai/tts-voices
+Bundled reference voice (reference_sample.wav):
+"Mary (f, conversation)" preset from the Kyutai TTS demo voice catalogue
+(https://kyutai.org/tts), distributed via
+https://huggingface.co/kyutai/tts-voices as `vctk/p333_023_enhanced.wav`.
+Original recording from the Voice Cloning Toolkit (VCTK) corpus, speaker p333:
+https://datashare.ed.ac.uk/handle/10283/3443 (CC-BY-4.0).
+Recording enhancement (denoise/dereverb) by ai-coustics:
+https://ai-coustics.com/
 
-Provided "AS IS", without warranty of any kind, express or implied.
+Buzz ships all ONNX/model artifacts and the reference voice WAV unmodified,
+renamed only by placement in the local model directory.
+
+Provided "AS IS", without warranty of any kind, express or implied. See the
+license text for full warranty disclaimer.
 ''';

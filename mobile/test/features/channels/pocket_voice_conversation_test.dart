@@ -108,6 +108,23 @@ void main() {
 
     expect(spoken.map((event) => event.id), ['direct']);
   });
+
+  test('never re-speaks retained history after large conversation updates', () {
+    final conversation = PocketVoiceConversation();
+    final history = [
+      for (var index = 0; index < 1100; index += 1)
+        _event('history-$index', 'bot', 'Historical response $index'),
+    ];
+    conversation.update(events: history, members: [bot], currentPubkey: 'self');
+
+    final spoken = conversation.update(
+      events: [...history, _event('new', 'bot', 'New response')],
+      members: [bot],
+      currentPubkey: 'self',
+    );
+
+    expect(spoken.map((event) => event.id), ['new']);
+  });
 }
 
 NostrEvent _event(

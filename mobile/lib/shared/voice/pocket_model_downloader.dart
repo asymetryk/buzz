@@ -14,6 +14,8 @@ import 'pocket_model_manifest.dart';
 const _manifestName = '.buzz-model-manifest';
 const _storageChannel = MethodChannel('buzz/voice_audio');
 const _minimumReserveBytes = 64 * 1024 * 1024;
+const _defaultSendTimeout = Duration(seconds: 30);
+const _defaultBodyIdleTimeout = Duration(seconds: 30);
 
 class PocketDownloadCancelled implements Exception {
   const PocketDownloadCancelled();
@@ -46,6 +48,8 @@ class PocketModelDownloader {
   final Future<void> Function(String path) excludeFromBackup;
   final List<PocketModelArtifact> artifacts;
   final String installationId;
+  final Duration sendTimeout;
+  final Duration bodyIdleTimeout;
 
   http.Client? _client;
   bool _cancelled = false;
@@ -57,6 +61,8 @@ class PocketModelDownloader {
     Future<void> Function(String path)? excludeFromBackup,
     this.artifacts = const [],
     String? installationId,
+    this.sendTimeout = _defaultSendTimeout,
+    this.bodyIdleTimeout = _defaultBodyIdleTimeout,
   }) : clientFactory = clientFactory ?? http.Client.new,
        applicationSupportDirectory =
            applicationSupportDirectory ?? getApplicationSupportDirectory,
@@ -125,6 +131,7 @@ class PocketModelDownloader {
       '${parent.path}/.pocket-tts-v$pocketModelVersion.install-$installationId',
     );
     await staging.create(recursive: true);
+    await excludeFromBackup(staging.path);
     var downloaded = 0;
     _client = clientFactory();
     try {
@@ -212,7 +219,7 @@ class PocketModelDownloader {
       if (await part.exists()) await part.delete();
       try {
         final request = http.Request('GET', artifact.url);
-        final response = await _client!.send(request);
+        final response = await _client!.send(request).timeout(sendTimeout);
         if (response.statusCode != HttpStatus.ok) {
           final retryable =
               response.statusCode == 408 ||
@@ -236,7 +243,7 @@ class PocketModelDownloader {
         final sink = part.openWrite();
         var bytes = 0;
         try {
-          await for (final chunk in response.stream) {
+          await for (final chunk in response.stream.timeout(bodyIdleTimeout)) {
             _throwIfCancelled();
             bytes += chunk.length;
             if (bytes > artifact.size) {
@@ -282,6 +289,10 @@ class PocketModelDownloader {
             error is TimeoutException ||
             (error is PocketModelDownloadException && error.retryable);
         if (!retryable || attempt == 2) break;
+        if (error is TimeoutException || error is SocketException) {
+          _client?.close();
+          _client = clientFactory();
+        }
         await Future<void>.delayed(Duration(milliseconds: 250 << attempt));
       }
     }
