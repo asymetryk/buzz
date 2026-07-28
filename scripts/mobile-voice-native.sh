@@ -206,6 +206,9 @@ build_android_abi() {
   target_env="$(printf '%s' "$target" | tr '[:lower:]-' '[:upper:]_')"
   local linker_var="CARGO_TARGET_${target_env}_LINKER"
   local rustflags_var="CARGO_TARGET_${target_env}_RUSTFLAGS"
+  if ! rustup target list --installed | grep -Fxq "$target"; then
+    rustup target add "$target"
+  fi
   env \
     SHERPA_ONNX_LIB_DIR="$source_libs" \
     "$linker_var=$linker" \
