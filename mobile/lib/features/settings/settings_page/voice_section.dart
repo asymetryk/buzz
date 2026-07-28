@@ -7,6 +7,10 @@ class _VoiceSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final model = ref.watch(pocketModelProvider);
     final downloading = model.phase == PocketModelPhase.downloading;
+    final switching =
+        downloading ||
+        model.phase == PocketModelPhase.checking ||
+        model.phase == PocketModelPhase.verifying;
     final status = switch (model.phase) {
       PocketModelPhase.checking => 'Checking…',
       PocketModelPhase.absent => 'Not downloaded',
@@ -31,12 +35,25 @@ class _VoiceSection extends ConsumerWidget {
       label: 'Voice',
       children: [
         AppListRow(
+          icon: LucideIcons.gauge,
+          title: 'Model size',
+          subtitle: model.variant == PocketModelVariant.higherQuality
+              ? 'Best voice quality. Uses more storage and memory.'
+              : 'Smaller and faster. Uses the supported hybrid INT8 model.',
+          subtitleMaxLines: 2,
+          value: model.variant.label,
+          trailing: switching ? null : const _RowChevron(),
+          onTap: switching
+              ? null
+              : () => _showModelSizePicker(context, ref, model.variant),
+        ),
+        AppListRow(
           icon: LucideIcons.audioLines,
           title: 'Pocket voice',
           subtitle:
               model.message ??
               'Private, on-device speech. Downloads '
-                  '${pocketModelRuntimeBytes ~/ 1000000} MB after install.',
+                  '${model.variant.runtimeBytes ~/ 1000000} MB after install.',
           subtitleMaxLines: 3,
           value: status,
           trailing: downloading
@@ -56,14 +73,58 @@ class _VoiceSection extends ConsumerWidget {
                 ),
           onTap: action,
         ),
-        const AppListRow(
+        AppListRow(
           icon: LucideIcons.hardDriveDownload,
           title: 'Model storage',
-          value: '${pocketModelRuntimeBytes ~/ 1000000} MB',
+          value: '${model.variant.runtimeBytes ~/ 1000000} MB',
           subtitle: 'Stored in application support, not duplicated in assets.',
           subtitleMaxLines: 2,
         ),
       ],
     );
   }
+}
+
+Future<void> _showModelSizePicker(
+  BuildContext context,
+  WidgetRef ref,
+  PocketModelVariant selected,
+) => showModalBottomSheet<void>(
+  context: context,
+  showDragHandle: true,
+  builder: (context) => SafeArea(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final variant in PocketModelVariant.values)
+          ListTile(
+            leading: Icon(
+              variant == selected
+                  ? LucideIcons.circleCheck
+                  : LucideIcons.circle,
+            ),
+            title: Text(variant.label),
+            subtitle: Text(
+              variant == PocketModelVariant.higherQuality
+                  ? 'FP32 · ${variant.runtimeBytes ~/ 1000000} MB'
+                  : 'Hybrid INT8 · ${variant.runtimeBytes ~/ 1000000} MB',
+            ),
+            onTap: () {
+              Navigator.pop(context);
+              unawaited(_selectPocketModelVariant(ref, variant));
+            },
+          ),
+        const SizedBox(height: Grid.xs),
+      ],
+    ),
+  ),
+);
+
+Future<void> _selectPocketModelVariant(
+  WidgetRef ref,
+  PocketModelVariant variant,
+) async {
+  if (variant == ref.read(pocketModelProvider).variant) return;
+  await ref.read(pocketVoiceProvider.notifier).releaseEngineForModelSelection();
+  await ref.read(pocketModelProvider.notifier).select(variant);
 }

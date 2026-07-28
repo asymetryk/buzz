@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:buzz/shared/relay/relay.dart';
 import 'package:buzz/shared/voice/pocket_model_provider.dart';
+import 'package:buzz/shared/voice/pocket_model_manifest.dart';
 import 'package:buzz/shared/voice/pocket_voice_controller.dart';
 import 'package:buzz/shared/voice/pocket_voice_worker.dart';
 import 'package:buzz/shared/voice/voice_audio_output.dart';
@@ -93,6 +94,73 @@ void main() {
         container.read(pocketVoiceProvider).phase,
         PocketVoicePhase.listening,
       );
+    },
+  );
+
+  test('overlapping enables share an in-flight engine startup', () async {
+    final worker = _FakeWorker(startPaused: true);
+    final output = _FakeAudioOutput();
+    final container = _container(worker, output);
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+
+    final first = notifier.enable('first-conversation');
+    await _flush();
+    final second = notifier.enable('second-conversation');
+    await _flush();
+
+    expect(worker.startCount, 1);
+    expect(worker.disposeCount, 0);
+
+    worker.finishStart();
+    await Future.wait([first, second]);
+
+    expect(worker.startCount, 1);
+    expect(worker.disposeCount, 0);
+    expect(
+      container.read(pocketVoiceProvider).conversationKey,
+      'second-conversation',
+    );
+    expect(
+      container.read(pocketVoiceProvider).phase,
+      PocketVoicePhase.listening,
+    );
+  });
+
+  test('model selection releases the resident engine', () async {
+    final worker = _FakeWorker();
+    final output = _FakeAudioOutput();
+    final container = _container(worker, output);
+    addTearDown(container.dispose);
+    final notifier = container.read(pocketVoiceProvider.notifier);
+
+    await notifier.enable('conversation');
+    await notifier.releaseEngineForModelSelection();
+
+    expect(container.read(pocketVoiceProvider).phase, PocketVoicePhase.off);
+    expect(worker.disposeCount, 1);
+  });
+
+  test(
+    'model selection waits for an in-flight engine before release',
+    () async {
+      final worker = _FakeWorker(startPaused: true);
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      final enabling = notifier.enable('conversation');
+      await _flush();
+      final releasing = notifier.releaseEngineForModelSelection();
+      await _flush();
+      expect(worker.disposeCount, 0);
+
+      worker.finishStart();
+      await Future.wait([enabling, releasing]);
+
+      expect(container.read(pocketVoiceProvider).phase, PocketVoicePhase.off);
+      expect(worker.disposeCount, 1);
     },
   );
 
@@ -197,6 +265,24 @@ void main() {
     expect(state.failureKind, PocketVoiceFailureKind.synthesis);
     expect(state.error, 'Pocket synthesis failed.');
   });
+
+  test('loads Faster through the existing worker precision seam', () async {
+    final worker = _FakeWorker();
+    final output = _FakeAudioOutput();
+    final container = ProviderContainer(
+      overrides: [
+        relayConfigProvider.overrideWith(_TestRelayConfigNotifier.new),
+        pocketModelProvider.overrideWith(_ReadyFasterModelNotifier.new),
+        pocketVoiceWorkerFactoryProvider.overrideWithValue(() => worker),
+        voiceAudioOutputProvider.overrideWithValue(output),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(pocketVoiceProvider.notifier).enable('conversation');
+
+    expect(worker.startedPrecision, PocketModelVariant.faster.nativePrecision);
+  });
 }
 
 ProviderContainer _container(_FakeWorker worker, _FakeAudioOutput output) =>
@@ -219,6 +305,15 @@ class _ReadyPocketModelNotifier extends PocketModelNotifier {
   );
 }
 
+class _ReadyFasterModelNotifier extends PocketModelNotifier {
+  @override
+  PocketModelState build() => const PocketModelState(
+    phase: PocketModelPhase.ready,
+    variant: PocketModelVariant.faster,
+    path: '/tmp/pocket-model-int8',
+  );
+}
+
 class _TestRelayConfigNotifier extends RelayConfigNotifier {
   @override
   RelayConfig build() => const RelayConfig(baseUrl: 'http://localhost:3000');
@@ -234,6 +329,7 @@ class _FakeWorker extends PocketVoiceWorker {
   int startCount = 0;
   int disposeCount = 0;
   int cancelCount = 0;
+  int? startedPrecision;
 
   _FakeWorker({bool startPaused = false})
     : _startGate = startPaused ? Completer<void>() : null;
@@ -245,8 +341,9 @@ class _FakeWorker extends PocketVoiceWorker {
   bool get isReady => _ready;
 
   @override
-  Future<void> start(String modelPath) async {
+  Future<void> start(String modelPath, {int precision = 0}) async {
     startCount += 1;
+    startedPrecision = precision;
     await _startGate?.future;
     _ready = true;
   }

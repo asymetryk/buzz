@@ -78,7 +78,7 @@ class PocketVoiceWorker {
   Stream<PocketWorkerResponse> get responses => _responses.stream;
   bool get isReady => _commands != null;
 
-  Future<void> start(String modelPath) async {
+  Future<void> start(String modelPath, {int precision = 0}) async {
     if (_isolate != null) return;
     final receive = ReceivePort();
     _receive = receive;
@@ -86,6 +86,7 @@ class PocketVoiceWorker {
     _isolate = await Isolate.spawn(_workerMain, (
       receive.sendPort,
       modelPath,
+      precision,
     ), debugName: 'buzz-pocket-voice');
     final first = await messages.first;
     if (first is! (SendPort, PocketWorkerResponse)) {
@@ -178,13 +179,13 @@ class PocketVoiceWorker {
   }
 }
 
-void _workerMain((SendPort, String) startup) {
+void _workerMain((SendPort, String, int) startup) {
   final output = startup.$1;
   final commands = ReceivePort();
   final ffi = PocketVoiceFfi();
   late final int handle;
   try {
-    handle = ffi.create(startup.$2);
+    handle = ffi.create(startup.$2, startup.$3);
   } catch (error) {
     output.send((
       commands.sendPort,

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:buzz/shared/voice/pocket_model_downloader.dart';
+import 'package:buzz/shared/voice/pocket_model_manifest.dart';
 import 'package:buzz/shared/voice/pocket_voice_worker.dart';
 import 'package:buzz/shared/voice/voice_audio_output.dart';
 import 'package:flutter/foundation.dart';
@@ -16,12 +17,17 @@ void main() {
       const configuredModelPath = String.fromEnvironment(
         'BUZZ_POCKET_MODEL_DIR',
       );
+      const configuredPrecision = String.fromEnvironment(
+        'BUZZ_POCKET_PRECISION',
+        defaultValue: 'fp32',
+      );
+      final variant = PocketModelVariant.fromStored(configuredPrecision);
       const downloadModel = bool.fromEnvironment('BUZZ_POCKET_DOWNLOAD');
       var modelPath = configuredModelPath;
       Duration? downloadTime;
       if (modelPath.isEmpty && downloadModel) {
         final clock = Stopwatch()..start();
-        final downloader = PocketModelDownloader();
+        final downloader = PocketModelDownloader(variant: variant);
         final directory = await downloader.install((downloaded, total, file) {
           if (downloaded == total) {
             debugPrint('Pocket model download complete: $file ($total bytes)');
@@ -40,7 +46,9 @@ void main() {
       }
 
       final worker = PocketVoiceWorker();
-      await worker.start(modelPath);
+      final loadClock = Stopwatch()..start();
+      await worker.start(modelPath, precision: variant.nativePrecision);
+      loadClock.stop();
       addTearDown(worker.dispose);
 
       final firstClock = Stopwatch()..start();
@@ -128,6 +136,8 @@ void main() {
       // Emitted in a stable shape so simulator/device runs are easy to compare.
       debugPrint(
         'BUZZ_POCKET_METRICS '
+        'precision=${variant.precision} '
+        'load_ms=${loadClock.elapsedMilliseconds} '
         'first_pcm_ms=${firstClock.elapsedMilliseconds} '
         'ttfap_ms=${firstPlaybackClock.elapsedMilliseconds} '
         'synthesis_ms=${first.synthesisTime.inMilliseconds} '

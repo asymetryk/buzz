@@ -58,13 +58,13 @@ void main() {
               as Map<String, dynamic>;
       expect(manifest['version'], pocketModelVersion);
       expect(manifest['revision'], pocketModelRevision);
-      expect(manifest['precision'], pocketModelPrecision);
+      expect(manifest['precision'], PocketModelVariant.higherQuality.precision);
       expect(progress.last, (5, 5, 'tiny.bin'));
-      expect(await legacy.exists(), isFalse);
+      expect(await legacy.exists(), isTrue);
       expect(excluded, hasLength(2));
       expect(
         excluded.first,
-        contains('.pocket-tts-v$pocketModelVersion.install-'),
+        contains('.pocket-tts-v$pocketModelVersion-fp32.install-'),
       );
       expect(excluded.last, directory.path);
       expect(
@@ -136,7 +136,7 @@ void main() {
   test('recovers an old install left by an interrupted atomic swap', () async {
     final parent = Directory('${temporary.path}/buzz/models/pocket-tts');
     final backup = Directory(
-      '${parent.path}/.pocket-tts-v$pocketModelVersion.old-crash',
+      '${parent.path}/.pocket-tts-v$pocketModelVersion-fp32.old-crash',
     );
     await backup.create(recursive: true);
     await File('${backup.path}/sentinel').writeAsString('previous install');
@@ -153,6 +153,122 @@ void main() {
     downloader.cancel();
     await expectLater(install, throwsA(isA<PocketDownloadCancelled>()));
   });
+
+  test(
+    'migrates the verified v4 FP32 cache into its v5 variant path',
+    () async {
+      final downloader = _downloader(
+        temporary,
+        artifact,
+        client: MockClient((_) async => http.Response('unused', 500)),
+      );
+      final root = Directory('${temporary.path}/buzz/models/pocket-tts');
+      final legacy = Directory('${root.path}/v$pocketLegacyFp32Version');
+      await legacy.create(recursive: true);
+      await File('${legacy.path}/tiny.bin').writeAsString('hello');
+      await File(
+        '${legacy.path}/MODEL_LICENSE.txt',
+      ).writeAsString(pocketModelLicenseText);
+      await File('${legacy.path}/.buzz-model-manifest').writeAsString(
+        jsonEncode({
+          'version': pocketLegacyFp32Version,
+          'revision': pocketModelRevision,
+          'precision': PocketModelVariant.higherQuality.precision,
+          'complete': true,
+        }),
+      );
+
+      expect(await downloader.isReady(), isTrue);
+
+      final migrated = await downloader.modelDirectory();
+      expect(await File('${migrated.path}/tiny.bin').readAsString(), 'hello');
+      expect(await legacy.exists(), isFalse);
+      final manifest =
+          jsonDecode(
+                await File(
+                  '${migrated.path}/.buzz-model-manifest',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      expect(manifest['version'], pocketModelVersion);
+      expect(manifest['precision'], 'fp32');
+    },
+  );
+
+  test('recovers and migrates a verified v4 atomic-swap backup', () async {
+    final downloader = _downloader(
+      temporary,
+      artifact,
+      client: MockClient((_) async => http.Response('unused', 500)),
+    );
+    final root = Directory('${temporary.path}/buzz/models/pocket-tts');
+    final backup = Directory('${root.path}/.pocket-tts-v4.old-crash');
+    await backup.create(recursive: true);
+    await File('${backup.path}/tiny.bin').writeAsString('hello');
+    await File(
+      '${backup.path}/MODEL_LICENSE.txt',
+    ).writeAsString(pocketModelLicenseText);
+    await File('${backup.path}/.buzz-model-manifest').writeAsString(
+      jsonEncode({
+        'version': pocketLegacyFp32Version,
+        'revision': pocketModelRevision,
+        'precision': PocketModelVariant.higherQuality.precision,
+        'complete': true,
+      }),
+    );
+
+    expect(await downloader.isReady(), isTrue);
+
+    final migrated = await downloader.modelDirectory();
+    expect(await File('${migrated.path}/tiny.bin').readAsString(), 'hello');
+    expect(await backup.exists(), isFalse);
+    expect(
+      await Directory('${root.path}/v$pocketLegacyFp32Version').exists(),
+      isFalse,
+    );
+  });
+
+  test(
+    'resumes a v5 migration staged after its manifest was rewritten',
+    () async {
+      final excluded = <String>[];
+      final downloader = _downloader(
+        temporary,
+        artifact,
+        client: MockClient((_) async => http.Response('unused', 500)),
+        excludeFromBackup: excluded.add,
+      );
+      final root = Directory('${temporary.path}/buzz/models/pocket-tts');
+      final staging = Directory(
+        '${root.path}/.pocket-tts-v$pocketModelVersion-fp32.'
+        'migrate-previous-process',
+      );
+      await staging.create(recursive: true);
+      await File('${staging.path}/tiny.bin').writeAsString('hello');
+      await File(
+        '${staging.path}/MODEL_LICENSE.txt',
+      ).writeAsString(pocketModelLicenseText);
+      await File('${staging.path}/.buzz-model-manifest').writeAsString(
+        jsonEncode({
+          'version': pocketModelVersion,
+          'revision': pocketModelRevision,
+          'precision': PocketModelVariant.higherQuality.precision,
+          'complete': true,
+        }),
+      );
+
+      expect(await downloader.isReady(), isTrue);
+
+      final migrated = await downloader.modelDirectory();
+      expect(await File('${migrated.path}/tiny.bin').readAsString(), 'hello');
+      expect(await staging.exists(), isFalse);
+      expect(
+        await Directory('${root.path}/v$pocketLegacyFp32Version').exists(),
+        isFalse,
+      );
+      expect(excluded, [migrated.path]);
+    },
+  );
 
   test('replaces clients and retries when sending never completes', () async {
     final clients = <_NeverSendingClient>[];
@@ -195,33 +311,48 @@ void main() {
     expect(nextClient, 2);
   });
 
-  test('April FP32 manifest matches the frozen shared runtime metadata', () {
-    expect(pocketModelVersion, '4');
+  test('both April manifests match the frozen shared runtime metadata', () {
+    expect(pocketModelVersion, '5');
     expect(pocketModelRevision, '58a6d00cf13d239b6748cb0769f35c580a8f606c');
-    expect(pocketModelPrecision, 'fp32');
+    for (final variant in PocketModelVariant.values) {
+      final artifacts = pocketModelArtifacts[variant]!;
+      expect(
+        artifacts
+            .where((artifact) => artifact.name != 'reference_sample.wav')
+            .where((artifact) => artifact.name != 'LICENSE')
+            .fold(0, (total, artifact) => total + artifact.size),
+        variant.coreBytes,
+      );
+      expect(
+        artifacts.fold(0, (total, artifact) => total + artifact.size),
+        variant.runtimeBytes,
+      );
+      expect(
+        artifacts.map((artifact) => artifact.name),
+        containsAll([
+          'bundle.json',
+          'bos_before_voice.npy',
+          'tokenizer.model',
+          'mimi_encoder.onnx',
+          'text_conditioner.onnx',
+        ]),
+      );
+    }
     expect(
-      pocketModelArtifacts
-          .where((artifact) => artifact.name != 'reference_sample.wav')
-          .where((artifact) => artifact.name != 'LICENSE')
-          .fold(0, (total, artifact) => total + artifact.size),
-      pocketModelCoreBytes,
-    );
-    expect(
-      pocketModelArtifacts.fold(0, (total, artifact) => total + artifact.size),
-      pocketModelRuntimeBytes,
-    );
-    expect(
-      pocketModelArtifacts.map((artifact) => artifact.name),
+      pocketModelArtifacts[PocketModelVariant.faster]!.map(
+        (artifact) => artifact.name,
+      ),
       containsAll([
-        'bundle.json',
-        'bos_before_voice.npy',
-        'tokenizer.model',
-        'flow_lm_main.onnx',
-        'flow_lm_flow.onnx',
-        'mimi_decoder.onnx',
-        'mimi_encoder.onnx',
-        'text_conditioner.onnx',
+        'flow_lm_main_int8.onnx',
+        'flow_lm_flow_int8.onnx',
+        'mimi_decoder_int8.onnx',
       ]),
+    );
+    expect(
+      pocketModelArtifacts[PocketModelVariant.faster]!.map(
+        (artifact) => artifact.name,
+      ),
+      isNot(contains('mimi_encoder_int8.onnx')),
     );
     expect(pocketModelLicenseText, contains('April 2026 ONNX export'));
     expect(pocketModelLicenseText, contains(pocketModelRevision));

@@ -48,6 +48,10 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
   final Queue<PocketWorkerAudio> _audio = Queue();
   PocketVoiceWorker? _worker;
   Future<PocketVoiceWorker>? _workerStart;
+  String? _workerStartingModelPath;
+  int? _workerStartingPrecision;
+  String? _workerModelPath;
+  int? _workerPrecision;
   StreamSubscription<PocketWorkerResponse>? _workerSubscription;
   StreamSubscription<VoiceAudioEvent>? _audioSubscription;
   int _transitionEpoch = 0;
@@ -63,6 +67,14 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
   PocketVoiceState build() {
     ref.listen(relayConfigProvider, (previous, _) {
       if (previous != null) unawaited(disable());
+    });
+    ref.listen(pocketModelProvider, (_, model) {
+      if (model.phase == PocketModelPhase.ready &&
+          _worker != null &&
+          (_workerModelPath != model.path ||
+              _workerPrecision != model.variant.nativePrecision)) {
+        unawaited(_replaceWorkerForModelChange());
+      }
     });
     _audioSubscription = ref
         .read(voiceAudioOutputProvider)
@@ -93,7 +105,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       conversationKey: conversationKey,
     );
     try {
-      await _ensureWorker(model.path!);
+      await _ensureWorker(model.path!, model.variant.nativePrecision);
       if (epoch != _transitionEpoch) return;
       state = PocketVoiceState(
         phase: PocketVoicePhase.listening,
@@ -119,6 +131,20 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
     await _stopConversation(preserveIncoming: false);
   }
 
+  /// Stops playback and releases the resident engine before model validation.
+  Future<void> releaseEngineForModelSelection() async {
+    await disable();
+    final starting = _workerStart;
+    if (starting != null) {
+      try {
+        await starting;
+      } catch (_) {
+        // Selection validation reports the candidate engine's own result.
+      }
+    }
+    await _disposeWorker();
+  }
+
   void speak(String conversationKey, String text) {
     if (!state.enabled || state.conversationKey != conversationKey) return;
     if (state.phase == PocketVoicePhase.error) return;
@@ -141,32 +167,78 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
     }
   }
 
-  Future<PocketVoiceWorker> _ensureWorker(String modelPath) {
-    final worker = _worker;
-    if (worker != null && worker.isReady) return Future.value(worker);
+  Future<PocketVoiceWorker> _ensureWorker(
+    String modelPath,
+    int precision,
+  ) async {
     final starting = _workerStart;
-    if (starting != null) return starting;
+    if (starting != null &&
+        _workerStartingModelPath == modelPath &&
+        _workerStartingPrecision == precision) {
+      return starting;
+    }
+    if (starting != null) {
+      try {
+        await starting;
+      } catch (_) {
+        // The replacement attempt below reports its own startup result.
+      }
+    }
+
+    final worker = _worker;
+    if (worker != null &&
+        worker.isReady &&
+        _workerModelPath == modelPath &&
+        _workerPrecision == precision) {
+      return worker;
+    }
+    if (worker != null) {
+      await _disposeWorker();
+    }
 
     final created = ref.read(pocketVoiceWorkerFactoryProvider)();
     _worker = created;
     _workerSubscription = created.responses.listen(_handleWorkerResponse);
-    final future = created.start(modelPath).then((_) => created);
+    final future = created
+        .start(modelPath, precision: precision)
+        .then((_) => created);
     _workerStart = future;
-    return () async {
-      try {
-        return await future;
-      } catch (error, stackTrace) {
-        if (identical(_worker, created)) {
-          _worker = null;
-          await _workerSubscription?.cancel();
-          _workerSubscription = null;
-        }
-        await created.dispose();
-        Error.throwWithStackTrace(error, stackTrace);
-      } finally {
-        if (identical(_workerStart, future)) _workerStart = null;
+    _workerStartingModelPath = modelPath;
+    _workerStartingPrecision = precision;
+    try {
+      final ready = await future;
+      _workerModelPath = modelPath;
+      _workerPrecision = precision;
+      return ready;
+    } catch (error, stackTrace) {
+      if (identical(_worker, created)) {
+        _worker = null;
+        await _workerSubscription?.cancel();
+        _workerSubscription = null;
       }
-    }();
+      await created.dispose();
+      Error.throwWithStackTrace(error, stackTrace);
+    } finally {
+      if (identical(_workerStart, future)) {
+        _workerStart = null;
+        _workerStartingModelPath = null;
+        _workerStartingPrecision = null;
+      }
+    }
+  }
+
+  Future<void> _replaceWorkerForModelChange() async {
+    await releaseEngineForModelSelection();
+  }
+
+  Future<void> _disposeWorker() async {
+    final worker = _worker;
+    _worker = null;
+    _workerModelPath = null;
+    _workerPrecision = null;
+    await _workerSubscription?.cancel();
+    _workerSubscription = null;
+    if (worker != null) await worker.dispose();
   }
 
   Future<void> _stopConversation({required bool preserveIncoming}) async {

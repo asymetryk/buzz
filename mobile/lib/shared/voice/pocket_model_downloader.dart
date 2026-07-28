@@ -12,7 +12,7 @@ import 'package:uuid/uuid.dart';
 import 'pocket_model_manifest.dart';
 
 const _manifestName = '.buzz-model-manifest';
-const _legacyPocketModelVersion = '3';
+const _legacyJanuaryModelVersion = '3';
 const _storageChannel = MethodChannel('buzz/voice_audio');
 const _minimumReserveBytes = 64 * 1024 * 1024;
 const _defaultSendTimeout = Duration(seconds: 30);
@@ -47,6 +47,7 @@ class PocketModelDownloader {
   final Future<Directory> Function() applicationSupportDirectory;
   final Future<int> Function(String path) availableCapacity;
   final Future<void> Function(String path) excludeFromBackup;
+  final PocketModelVariant variant;
   final List<PocketModelArtifact> artifacts;
   final String installationId;
   final Duration sendTimeout;
@@ -60,6 +61,7 @@ class PocketModelDownloader {
     Future<Directory> Function()? applicationSupportDirectory,
     Future<int> Function(String path)? availableCapacity,
     Future<void> Function(String path)? excludeFromBackup,
+    this.variant = PocketModelVariant.higherQuality,
     this.artifacts = const [],
     String? installationId,
     this.sendTimeout = _defaultSendTimeout,
@@ -72,7 +74,7 @@ class PocketModelDownloader {
        installationId = installationId ?? const Uuid().v4();
 
   List<PocketModelArtifact> get _artifacts =>
-      artifacts.isEmpty ? pocketModelArtifacts : artifacts;
+      artifacts.isEmpty ? pocketModelArtifacts[variant]! : artifacts;
 
   int get _downloadBytes =>
       _artifacts.fold(0, (total, artifact) => total + artifact.size);
@@ -80,17 +82,19 @@ class PocketModelDownloader {
   Future<Directory> modelDirectory() async {
     final support = await applicationSupportDirectory();
     return Directory(
-      '${support.path}/buzz/models/pocket-tts/v$pocketModelVersion',
+      '${support.path}/buzz/models/pocket-tts/'
+      'v$pocketModelVersion/${variant.cacheKey}',
     );
   }
 
   Future<bool> isReady() async {
     final directory = await modelDirectory();
-    final ready = await verify(directory, hashContents: false);
-    if (ready) {
-      await _cleanupLegacyVersion(directory.parent);
+    if (await verify(directory, hashContents: false)) return true;
+    if (variant == PocketModelVariant.higherQuality &&
+        await _migrateLegacyFp32(directory)) {
+      return true;
     }
-    return ready;
+    return false;
   }
 
   Future<bool> verify(Directory directory, {required bool hashContents}) async {
@@ -101,7 +105,7 @@ class PocketModelDownloader {
           jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
       if (decoded['version'] != pocketModelVersion ||
           decoded['revision'] != pocketModelRevision ||
-          decoded['precision'] != pocketModelPrecision ||
+          decoded['precision'] != variant.precision ||
           decoded['complete'] != true) {
         return false;
       }
@@ -123,11 +127,11 @@ class PocketModelDownloader {
   Future<Directory> install(PocketDownloadProgress onProgress) async {
     _cancelled = false;
     final finalDirectory = await modelDirectory();
-    final parent = finalDirectory.parent;
-    await parent.create(recursive: true);
-    await _cleanupAbandoned(parent, finalDirectory.path);
+    final root = finalDirectory.parent.parent;
+    await finalDirectory.parent.create(recursive: true);
+    await _cleanupAbandoned(root, finalDirectory.path);
 
-    final available = await availableCapacity(parent.path);
+    final available = await availableCapacity(root.path);
     final reserve = max(_minimumReserveBytes, (_downloadBytes * 0.1).ceil());
     final required = _downloadBytes + reserve;
     if (available < required) {
@@ -135,7 +139,8 @@ class PocketModelDownloader {
     }
 
     final staging = Directory(
-      '${parent.path}/.pocket-tts-v$pocketModelVersion.install-$installationId',
+      '${root.path}/.pocket-tts-v$pocketModelVersion-'
+      '${variant.cacheKey}.install-$installationId',
     );
     await staging.create(recursive: true);
     await excludeFromBackup(staging.path);
@@ -144,7 +149,7 @@ class PocketModelDownloader {
     try {
       for (final artifact in _artifacts) {
         _throwIfCancelled();
-        await _ensureCapacity(parent.path, artifact.size);
+        await _ensureCapacity(root.path, artifact.size);
         await _downloadArtifact(
           artifact,
           staging,
@@ -158,23 +163,7 @@ class PocketModelDownloader {
       await File(
         '${staging.path}/MODEL_LICENSE.txt',
       ).writeAsString(pocketModelLicenseText, flush: true);
-      await File('${staging.path}/$_manifestName').writeAsString(
-        jsonEncode({
-          'version': pocketModelVersion,
-          'revision': pocketModelRevision,
-          'precision': pocketModelPrecision,
-          'complete': true,
-          'artifacts': [
-            for (final artifact in _artifacts)
-              {
-                'name': artifact.name,
-                'size': artifact.size,
-                'sha256': artifact.sha256,
-              },
-          ],
-        }),
-        flush: true,
-      );
+      await _writeManifest(staging);
       if (!await verify(staging, hashContents: true)) {
         throw const PocketModelDownloadException(
           'Pocket model verification failed after download.',
@@ -182,7 +171,8 @@ class PocketModelDownloader {
       }
 
       final backup = Directory(
-        '${parent.path}/.pocket-tts-v$pocketModelVersion.old-$installationId',
+        '${root.path}/.pocket-tts-v$pocketModelVersion-'
+        '${variant.cacheKey}.old-$installationId',
       );
       if (await finalDirectory.exists()) {
         await finalDirectory.rename(backup.path);
@@ -199,7 +189,6 @@ class PocketModelDownloader {
         await backup.delete(recursive: true);
       }
       await excludeFromBackup(finalDirectory.path);
-      await _cleanupLegacyVersion(parent);
       return finalDirectory;
     } on PocketDownloadCancelled {
       rethrow;
@@ -321,19 +310,20 @@ class PocketModelDownloader {
     }
   }
 
-  Future<void> _cleanupAbandoned(Directory parent, String finalPath) async {
-    if (!await parent.exists()) return;
+  Future<void> _cleanupAbandoned(Directory root, String finalPath) async {
+    if (!await root.exists()) return;
     final finalDirectory = Directory(finalPath);
     final backups = <Directory>[];
-    await for (final entity in parent.list()) {
+    await for (final entity in root.list()) {
       if (entity.path == finalPath) continue;
       final name = entity.uri.pathSegments
           .where((segment) => segment.isNotEmpty)
           .last;
       if (entity is! Directory) continue;
-      if (name.startsWith('.pocket-tts-v$pocketModelVersion.old-')) {
+      final prefix = '.pocket-tts-v$pocketModelVersion-${variant.cacheKey}.';
+      if (name.startsWith('${prefix}old-')) {
         backups.add(entity);
-      } else if (name.startsWith('.pocket-tts-v$pocketModelVersion.install-')) {
+      } else if (name.startsWith('${prefix}install-')) {
         await entity.delete(recursive: true);
       }
     }
@@ -349,17 +339,195 @@ class PocketModelDownloader {
     }
   }
 
-  Future<void> _cleanupLegacyVersion(Directory parent) async {
-    final legacy = Directory('${parent.path}/v$_legacyPocketModelVersion');
+  Future<void> deleteCache() async {
+    final directory = await modelDirectory();
     try {
-      if (await legacy.exists()) {
-        await legacy.delete(recursive: true);
-      }
+      if (await directory.exists()) await directory.delete(recursive: true);
     } on FileSystemException {
-      // The verified v4 model remains usable. A later readiness check retries
-      // cleanup instead of turning a successful upgrade into an error state.
+      // Cleanup is opportunistic. The selected verified cache remains usable.
+    }
+    if (variant == PocketModelVariant.higherQuality) {
+      await deleteLegacyCaches();
     }
   }
+
+  Future<void> deleteLegacyCaches() async {
+    final directory = await modelDirectory();
+    final root = directory.parent.parent;
+    try {
+      for (final version in [
+        pocketLegacyFp32Version,
+        _legacyJanuaryModelVersion,
+      ]) {
+        final legacy = Directory('${root.path}/v$version');
+        if (await legacy.exists()) await legacy.delete(recursive: true);
+      }
+    } on FileSystemException {
+      // A later readiness check retries cleanup.
+    }
+  }
+
+  Future<bool> _migrateLegacyFp32(Directory finalDirectory) async {
+    final root = finalDirectory.parent.parent;
+    final legacy = Directory('${root.path}/v$pocketLegacyFp32Version');
+    await _recoverLegacyFp32Backup(root, legacy);
+    final staged = await _legacyMigrationStaging(root);
+    if (!await finalDirectory.exists()) {
+      for (final candidate in staged.toList()) {
+        if (!await verify(candidate, hashContents: false)) continue;
+        await finalDirectory.parent.create(recursive: true);
+        await candidate.rename(finalDirectory.path);
+        staged.remove(candidate);
+        await excludeFromBackup(finalDirectory.path);
+        await _deleteOpportunistically(
+          Directory('${root.path}/v$_legacyJanuaryModelVersion'),
+        );
+        for (final extra in staged) {
+          await _deleteOpportunistically(extra);
+        }
+        return true;
+      }
+    }
+    if (!await legacy.exists()) {
+      for (final candidate in staged.toList()) {
+        if (!await _verifyLegacyFp32(candidate)) continue;
+        await candidate.rename(legacy.path);
+        staged.remove(candidate);
+        break;
+      }
+    }
+    for (final extra in staged) {
+      await _deleteOpportunistically(extra);
+    }
+
+    final staging = Directory(
+      '${root.path}/.pocket-tts-v$pocketModelVersion-fp32.'
+      'migrate-$installationId',
+    );
+    if (!await _verifyLegacyFp32(legacy)) return false;
+
+    await finalDirectory.parent.create(recursive: true);
+    await legacy.rename(staging.path);
+    try {
+      await _writeManifest(staging);
+      if (!await verify(staging, hashContents: false)) {
+        throw const PocketModelDownloadException(
+          'Migrated Pocket model verification failed.',
+        );
+      }
+      await staging.rename(finalDirectory.path);
+      await excludeFromBackup(finalDirectory.path);
+      final january = Directory('${root.path}/v$_legacyJanuaryModelVersion');
+      await _deleteOpportunistically(january);
+      return true;
+    } catch (_) {
+      if (await staging.exists() && !await legacy.exists()) {
+        await staging.rename(legacy.path);
+      }
+      rethrow;
+    }
+  }
+
+  Future<List<Directory>> _legacyMigrationStaging(Directory root) async {
+    if (!await root.exists()) return [];
+    final candidates = <Directory>[];
+    final prefix = '.pocket-tts-v$pocketModelVersion-fp32.migrate-';
+    await for (final entity in root.list()) {
+      if (entity is! Directory) continue;
+      final name = entity.uri.pathSegments
+          .where((segment) => segment.isNotEmpty)
+          .last;
+      if (name.startsWith(prefix)) candidates.add(entity);
+    }
+    candidates.sort(
+      (left, right) =>
+          right.statSync().modified.compareTo(left.statSync().modified),
+    );
+    return candidates;
+  }
+
+  Future<void> _recoverLegacyFp32Backup(
+    Directory root,
+    Directory legacy,
+  ) async {
+    if (!await root.exists()) return;
+    final backups = <Directory>[];
+    await for (final entity in root.list()) {
+      if (entity is! Directory) continue;
+      final name = entity.uri.pathSegments
+          .where((segment) => segment.isNotEmpty)
+          .last;
+      if (name.startsWith('.pocket-tts-v$pocketLegacyFp32Version.old-')) {
+        backups.add(entity);
+      }
+    }
+    backups.sort(
+      (left, right) =>
+          right.statSync().modified.compareTo(left.statSync().modified),
+    );
+    if (!await legacy.exists()) {
+      for (final backup in backups.toList()) {
+        if (!await _verifyLegacyFp32(backup)) continue;
+        await backup.rename(legacy.path);
+        backups.remove(backup);
+        break;
+      }
+    }
+    for (final backup in backups) {
+      await _deleteOpportunistically(backup);
+    }
+  }
+
+  Future<void> _deleteOpportunistically(Directory directory) async {
+    try {
+      if (await directory.exists()) await directory.delete(recursive: true);
+    } on FileSystemException {
+      // A later readiness check retries stale-cache cleanup.
+    }
+  }
+
+  Future<bool> _verifyLegacyFp32(Directory directory) async {
+    final manifest = File('${directory.path}/$_manifestName');
+    if (!await manifest.isFile()) return false;
+    try {
+      final decoded =
+          jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
+      if (decoded['version'] != pocketLegacyFp32Version ||
+          decoded['revision'] != pocketModelRevision ||
+          decoded['precision'] != PocketModelVariant.higherQuality.precision ||
+          decoded['complete'] != true) {
+        return false;
+      }
+      for (final artifact in _artifacts) {
+        final file = File('${directory.path}/${artifact.name}');
+        if (!await file.isFile() || await file.length() != artifact.size) {
+          return false;
+        }
+      }
+      return File('${directory.path}/MODEL_LICENSE.txt').isFile();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _writeManifest(Directory directory) =>
+      File('${directory.path}/$_manifestName').writeAsString(
+        jsonEncode({
+          'version': pocketModelVersion,
+          'revision': pocketModelRevision,
+          'precision': variant.precision,
+          'complete': true,
+          'artifacts': [
+            for (final artifact in _artifacts)
+              {
+                'name': artifact.name,
+                'size': artifact.size,
+                'sha256': artifact.sha256,
+              },
+          ],
+        }),
+        flush: true,
+      );
 
   void _throwIfCancelled() {
     if (_cancelled) throw const PocketDownloadCancelled();

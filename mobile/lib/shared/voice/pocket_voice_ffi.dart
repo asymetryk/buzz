@@ -51,8 +51,6 @@ class PocketVoicePcm {
 }
 
 class PocketVoiceFfi {
-  static const fp32Precision = 0;
-
   final ffi.DynamicLibrary _library;
   late final _CreateDart _create;
   late final _SynthDart _synthesize;
@@ -91,9 +89,9 @@ class PocketVoiceFfi {
     );
   }
 
-  int create(String modelPath) {
+  int create(String modelPath, int precision) {
     final path = modelPath.toNativeUtf8();
-    final result = _create(path, fp32Precision);
+    final result = _create(path, precision);
     calloc.free(path);
     if (result.error != ffi.nullptr) {
       throw StateError(_takeError(result.error));

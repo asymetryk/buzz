@@ -51,6 +51,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.text('Pocket voice'), findsOneWidget);
+    expect(find.text('Model size'), findsOneWidget);
+    expect(find.text('Higher quality'), findsOneWidget);
     expect(find.text('Not downloaded'), findsOneWidget);
     expect(find.textContaining('Downloads 440 MB'), findsOneWidget);
     expect(find.text('440 MB'), findsOneWidget);
@@ -65,6 +67,11 @@ void main() {
         matchesGoldenFile('goldens/pocket_voice_settings.png'),
       );
     }
+
+    await tester.tap(find.text('Model size'));
+    await tester.pumpAndSettle();
+    expect(find.text('Faster'), findsOneWidget);
+    expect(find.text('Hybrid INT8 · 165 MB'), findsOneWidget);
   });
 }
 
