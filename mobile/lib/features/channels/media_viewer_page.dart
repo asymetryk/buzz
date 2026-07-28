@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:video_player/video_player.dart';
@@ -8,27 +10,156 @@ import 'package:video_player/video_player.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
 
-const _imageViewerPushDuration = Duration(milliseconds: 280);
-const _imageViewerPopDuration = Duration(milliseconds: 220);
-const _imageViewerTransitionOffset = Offset(0, 0.08);
+const _imageViewerPushDuration = Duration(milliseconds: 260);
+const _imageViewerPopDuration = Duration(milliseconds: 170);
 const _identityTransformEpsilon = 0.0001;
 final List<double> _identityTransformStorage = List<double>.unmodifiable(
   Matrix4.identity().storage,
 );
 
+/// Opens message-specific actions for the currently visible image.
+typedef MediaViewerMoreAction =
+    void Function(BuildContext context, String imageUrl);
+
+/// An image and its source Hero tag in a full-screen media gallery.
+@immutable
+class MediaViewerImage {
+  /// The image URL.
+  final String url;
+
+  /// The shared-element transition tag for the source thumbnail.
+  final Object heroTag;
+
+  /// The accessible image description.
+  final String? semanticLabel;
+
+  /// The logical decode width already cached by the source thumbnail.
+  final double? previewDecodeWidth;
+
+  /// The image's intrinsic width-to-height ratio, when provided by metadata.
+  final double? aspectRatio;
+
+  /// Creates a media-viewer image.
+  const MediaViewerImage({
+    required this.url,
+    required this.heroTag,
+    this.semanticLabel,
+    this.previewDecodeWidth,
+    this.aspectRatio,
+  });
+}
+
+/// Keeps image-viewer shared-element motion consistent at every source.
+class MediaViewerHero extends StatelessWidget {
+  /// The identity shared by the inline image and full-screen image.
+  final Object tag;
+
+  /// The image rendered during and after the shared-element transition.
+  final Widget child;
+
+  /// Creates an image-viewer shared element.
+  const MediaViewerHero({super.key, required this.tag, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Hero(
+      tag: tag,
+      createRectTween: (begin, end) => RectTween(begin: begin, end: end),
+      flightShuttleBuilder:
+          (
+            flightContext,
+            animation,
+            flightDirection,
+            fromHeroContext,
+            toHeroContext,
+          ) {
+            final sourceHero = fromHeroContext.widget;
+            final destinationHero = toHeroContext.widget;
+            final sourceChild = sourceHero is Hero ? sourceHero.child : child;
+            final destinationChild = destinationHero is Hero
+                ? destinationHero.child
+                : child;
+            return _MediaViewerHeroFlight(
+              animation: animation,
+              sourceChild: sourceChild,
+              destinationChild: destinationChild,
+            );
+          },
+      child: child,
+    );
+  }
+}
+
+class _MediaViewerHeroFlight extends StatelessWidget {
+  final Animation<double> animation;
+  final Widget sourceChild;
+  final Widget destinationChild;
+
+  const _MediaViewerHeroFlight({
+    required this.animation,
+    required this.sourceChild,
+    required this.destinationChild,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final destinationOpacity = CurvedAnimation(
+      parent: animation,
+      curve: const Interval(0.18, 0.82, curve: Curves.easeInOutCubic),
+    );
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        FadeTransition(
+          opacity: ReverseAnimation(destinationOpacity),
+          child: sourceChild,
+        ),
+        FadeTransition(opacity: destinationOpacity, child: destinationChild),
+      ],
+    );
+  }
+}
+
 PageRoute<void> buildImageViewerRoute({
   required String imageUrl,
   required Object heroTag,
   String? semanticLabel,
+  double? previewDecodeWidth,
+  double? aspectRatio,
+  List<MediaViewerImage>? galleryItems,
+  int initialIndex = 0,
+  VoidCallback? onReply,
+  MediaViewerMoreAction? onMore,
+  bool disableAnimations = false,
 }) {
+  final images =
+      galleryItems ??
+      [
+        MediaViewerImage(
+          url: imageUrl,
+          heroTag: heroTag,
+          semanticLabel: semanticLabel,
+          previewDecodeWidth: previewDecodeWidth,
+          aspectRatio: aspectRatio,
+        ),
+      ];
+  final safeInitialIndex = initialIndex.clamp(0, images.length - 1).toInt();
   return PageRouteBuilder<void>(
-    transitionDuration: _imageViewerPushDuration,
-    reverseTransitionDuration: _imageViewerPopDuration,
+    transitionDuration: disableAnimations
+        ? Duration.zero
+        : _imageViewerPushDuration,
+    reverseTransitionDuration: disableAnimations
+        ? Duration.zero
+        : _imageViewerPopDuration,
     pageBuilder: (context, animation, secondaryAnimation) =>
         MediaImageViewerPage(
           imageUrl: imageUrl,
           heroTag: heroTag,
           semanticLabel: semanticLabel,
+          galleryItems: images,
+          initialIndex: safeInitialIndex,
+          onReply: onReply,
+          onMore: onMore,
         ),
     transitionsBuilder: (context, animation, secondaryAnimation, child) =>
         _MediaViewerRouteTransition(animation: animation, child: child),
@@ -40,12 +171,25 @@ void openImageViewer(
   required String imageUrl,
   required Object heroTag,
   String? semanticLabel,
+  double? previewDecodeWidth,
+  double? aspectRatio,
+  List<MediaViewerImage>? galleryItems,
+  int initialIndex = 0,
+  VoidCallback? onReply,
+  MediaViewerMoreAction? onMore,
 }) {
   Navigator.of(context).push(
     buildImageViewerRoute(
       imageUrl: imageUrl,
       heroTag: heroTag,
       semanticLabel: semanticLabel,
+      previewDecodeWidth: previewDecodeWidth,
+      aspectRatio: aspectRatio,
+      galleryItems: galleryItems,
+      initialIndex: initialIndex,
+      onReply: onReply,
+      onMore: onMore,
+      disableAnimations: MediaQuery.disableAnimationsOf(context),
     ),
   );
 }
@@ -57,8 +201,12 @@ void openVideoViewer(
 }) {
   Navigator.of(context).push(
     PageRouteBuilder<void>(
-      transitionDuration: _imageViewerPushDuration,
-      reverseTransitionDuration: _imageViewerPopDuration,
+      transitionDuration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : _imageViewerPushDuration,
+      reverseTransitionDuration: MediaQuery.disableAnimationsOf(context)
+          ? Duration.zero
+          : _imageViewerPopDuration,
       pageBuilder: (context, animation, secondaryAnimation) =>
           MediaVideoViewerPage(videoUrl: videoUrl, posterUrl: posterUrl),
       transitionsBuilder: (context, animation, secondaryAnimation, child) =>
@@ -80,25 +228,11 @@ class _MediaViewerRouteTransition extends StatelessWidget {
   Widget build(BuildContext context) {
     final fade = CurvedAnimation(
       parent: animation,
-      curve: Curves.easeOut,
-      reverseCurve: Curves.easeIn,
-    );
-    final slide = CurvedAnimation(
-      parent: animation,
       curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
+      reverseCurve: Curves.easeInOutCubic,
     );
 
-    return FadeTransition(
-      opacity: fade,
-      child: SlideTransition(
-        position: Tween<Offset>(
-          begin: _imageViewerTransitionOffset,
-          end: Offset.zero,
-        ).animate(slide),
-        child: child,
-      ),
-    );
+    return FadeTransition(opacity: fade, child: child);
   }
 }
 
@@ -108,12 +242,20 @@ class MediaImageViewerPage extends StatefulWidget {
   final String imageUrl;
   final Object heroTag;
   final String? semanticLabel;
+  final List<MediaViewerImage>? galleryItems;
+  final int initialIndex;
+  final VoidCallback? onReply;
+  final MediaViewerMoreAction? onMore;
 
   const MediaImageViewerPage({
     super.key,
     required this.imageUrl,
     required this.heroTag,
     this.semanticLabel,
+    this.galleryItems,
+    this.initialIndex = 0,
+    this.onReply,
+    this.onMore,
   });
 
   @override
@@ -122,21 +264,54 @@ class MediaImageViewerPage extends StatefulWidget {
 
 class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     with SingleTickerProviderStateMixin {
-  late final TransformationController _transformationController;
+  late final List<MediaViewerImage> _images;
+  late final int _initialIndex;
+  late final PageController _pageController;
+  late final ValueNotifier<double> _pagePosition;
+  late final List<TransformationController> _transformationControllers;
+  late final List<VoidCallback> _transformationListeners;
   late final AnimationController _snapBackController;
+  Animation<double>? _routeAnimation;
+  late int _currentIndex;
   bool _isTransformed = false;
   bool _disableHeroOnDismiss = false;
+  bool _useFullResolution = false;
+  bool _fullResolutionUpgradeScheduled = false;
   double _dragOffset = 0;
   bool _isDragging = false;
 
   static const _dismissThreshold = 100.0;
+  static const _dismissVelocity = 700.0;
   static const _backgroundFadeDivisor = 300.0;
-
+  static const _filmstripScrubExtent = 44.0;
   @override
   void initState() {
     super.initState();
-    _transformationController = TransformationController();
-    _transformationController.addListener(_handleTransformChanged);
+    _images =
+        widget.galleryItems ??
+        [
+          MediaViewerImage(
+            url: widget.imageUrl,
+            heroTag: widget.heroTag,
+            semanticLabel: widget.semanticLabel,
+          ),
+        ];
+    _initialIndex = widget.initialIndex.clamp(0, _images.length - 1).toInt();
+    _currentIndex = _initialIndex;
+    _pageController = PageController(initialPage: _initialIndex);
+    _pagePosition = ValueNotifier(_initialIndex.toDouble());
+    _pageController.addListener(_handlePagePositionChanged);
+    _transformationControllers = [
+      for (var index = 0; index < _images.length; index++)
+        TransformationController(),
+    ];
+    _transformationListeners = [];
+    for (var index = 0; index < _transformationControllers.length; index++) {
+      final controllerIndex = index;
+      void listener() => _handleTransformChanged(controllerIndex);
+      _transformationListeners.add(listener);
+      _transformationControllers[index].addListener(listener);
+    }
     _snapBackController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 200),
@@ -144,15 +319,76 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final nextRouteAnimation = ModalRoute.of(context)?.animation;
+    if (identical(_routeAnimation, nextRouteAnimation)) {
+      return;
+    }
+
+    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
+    _routeAnimation = nextRouteAnimation;
+    if (nextRouteAnimation == null ||
+        nextRouteAnimation.status == AnimationStatus.completed) {
+      _scheduleFullResolutionUpgrade();
+    } else {
+      nextRouteAnimation.addStatusListener(_handleRouteAnimationStatus);
+    }
+  }
+
+  void _handleRouteAnimationStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed || _useFullResolution || !mounted) {
+      return;
+    }
+    _scheduleFullResolutionUpgrade();
+  }
+
+  void _scheduleFullResolutionUpgrade() {
+    if (_fullResolutionUpgradeScheduled || _useFullResolution) {
+      return;
+    }
+    _fullResolutionUpgradeScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _useFullResolution = true;
+      });
+    });
+  }
+
+  @override
   void dispose() {
-    _transformationController.removeListener(_handleTransformChanged);
-    _transformationController.dispose();
+    for (var index = 0; index < _transformationControllers.length; index++) {
+      _transformationControllers[index].removeListener(
+        _transformationListeners[index],
+      );
+      _transformationControllers[index].dispose();
+    }
+    _pageController.removeListener(_handlePagePositionChanged);
+    _pageController.dispose();
+    _pagePosition.dispose();
     _snapBackController.dispose();
+    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
     super.dispose();
   }
 
-  void _handleTransformChanged() {
-    final isTransformed = _hasImageTransform(_transformationController.value);
+  void _handlePagePositionChanged() {
+    if (!_pageController.hasClients) return;
+    final nextPosition = _pageController.page;
+    if (nextPosition == null ||
+        (nextPosition - _pagePosition.value).abs() < 0.0001) {
+      return;
+    }
+    _pagePosition.value = nextPosition;
+  }
+
+  void _handleTransformChanged(int index) {
+    if (index != _currentIndex) return;
+    final isTransformed = _hasImageTransform(
+      _transformationControllers[index].value,
+    );
     if (isTransformed == _isTransformed) {
       return;
     }
@@ -167,26 +403,82 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     });
   }
 
-  void _onInteractionStart(ScaleStartDetails details) {
-    if (!_isTransformed && details.pointerCount == 1) {
+  void _onPageChanged(int index) {
+    setState(() {
+      _currentIndex = index;
+      _isTransformed = _hasImageTransform(
+        _transformationControllers[index].value,
+      );
+      _disableHeroOnDismiss = index != _initialIndex;
+      _dragOffset = 0;
+      _isDragging = false;
+    });
+  }
+
+  void _onFilmstripScrubUpdate(double delta) {
+    if (_isTransformed || !_pageController.hasClients) return;
+    final position = _pageController.position;
+    final viewport = position.viewportDimension;
+    if (viewport <= 0) return;
+    final target =
+        (_pageController.offset - ((delta / _filmstripScrubExtent) * viewport))
+            .clamp(position.minScrollExtent, position.maxScrollExtent)
+            .toDouble();
+    _pageController.jumpTo(target);
+  }
+
+  void _onFilmstripScrubEnd() {
+    if (!_pageController.hasClients) return;
+    final targetPage = (_pageController.page ?? _currentIndex.toDouble())
+        .round()
+        .clamp(0, _images.length - 1);
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _pageController.jumpToPage(targetPage);
+      return;
+    }
+    _pageController.animateToPage(
+      targetPage,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _onImageInteractionStart(ScaleStartDetails details) {
+    if (details.pointerCount == 1 && !_isTransformed) {
       _isDragging = true;
     }
   }
 
-  void _onInteractionUpdate(ScaleUpdateDetails details) {
-    if (_isDragging && !_isTransformed) {
-      setState(() {
-        _dragOffset += details.focalPointDelta.dy;
-      });
+  void _onImageInteractionUpdate(ScaleUpdateDetails details) {
+    if (details.pointerCount > 1 || details.scale != 1) {
+      if (_isDragging) {
+        setState(() {
+          _isDragging = false;
+          _dragOffset = 0;
+        });
+      }
+      return;
     }
+
+    if (!_isDragging || _isTransformed) return;
+    setState(() {
+      _dragOffset = (_dragOffset + details.focalPointDelta.dy).clamp(
+        0.0,
+        MediaQuery.sizeOf(context).height,
+      );
+    });
   }
 
-  void _onInteractionEnd(ScaleEndDetails details) {
+  void _onImageInteractionEnd(ScaleEndDetails details) {
     if (!_isDragging) return;
+    _finishVerticalDismiss(details.velocity.pixelsPerSecond.dy);
+  }
+
+  void _finishVerticalDismiss(double velocity) {
     _isDragging = false;
 
-    if (_dragOffset.abs() > _dismissThreshold) {
-      _dismiss();
+    if (_dragOffset > _dismissThreshold || velocity > _dismissVelocity) {
+      unawaited(_dismiss());
     } else {
       _animateSnapBack();
     }
@@ -195,23 +487,33 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
   void _animateSnapBack() {
     final startOffset = _dragOffset;
     final tween = Tween<double>(begin: startOffset, end: 0);
-    final curved = CurvedAnimation(
-      parent: _snapBackController,
-      curve: Curves.easeOut,
-    );
 
     void listener() {
       setState(() {
-        _dragOffset = tween.evaluate(curved);
+        _dragOffset = tween.evaluate(_snapBackController);
       });
     }
 
     _snapBackController
+      ..stop()
       ..reset()
       ..addListener(listener);
-    _snapBackController.forward().whenCompleteOrCancel(() {
-      _snapBackController.removeListener(listener);
-    });
+    _snapBackController
+        .animateWith(
+          SpringSimulation(
+            SpringDescription.withDurationAndBounce(
+              duration: const Duration(milliseconds: 260),
+              bounce: 0.14,
+            ),
+            0,
+            1,
+            0,
+            snapToEnd: true,
+          ),
+        )
+        .whenCompleteOrCancel(() {
+          _snapBackController.removeListener(listener);
+        });
   }
 
   bool get _canDismissWithHero => !_isTransformed || _disableHeroOnDismiss;
@@ -236,8 +538,26 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     Navigator.of(context).maybePop();
   }
 
+  Future<void> _replyInThread() async {
+    final onReply = widget.onReply;
+    if (onReply == null) return;
+    final route = ModalRoute.of(context);
+    await _dismiss();
+    await route?.completed;
+    onReply();
+  }
+
+  void _showMoreActions() {
+    widget.onMore?.call(context, _images[_currentIndex].url);
+  }
+
   @override
   Widget build(BuildContext context) {
+    final viewportHeight = MediaQuery.sizeOf(context).height;
+    final dragProgress = (_dragOffset / viewportHeight).clamp(0.0, 1.0);
+    final imageScale = 1 - (dragProgress * 0.1);
+    final chromeOpacity = (1 - (_dragOffset / 160)).clamp(0.0, 1.0);
+
     return PopScope<void>(
       canPop: _canDismissWithHero,
       onPopInvokedWithResult: (didPop, result) {
@@ -259,51 +579,139 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
             Positioned.fill(
               child: Transform.translate(
                 offset: Offset(0, _dragOffset),
-                child: InteractiveViewer(
-                  transformationController: _transformationController,
-                  onInteractionStart: _onInteractionStart,
-                  onInteractionUpdate: _onInteractionUpdate,
-                  onInteractionEnd: _onInteractionEnd,
-                  minScale: 1,
-                  maxScale: 4,
-                  child: Center(
-                    child: HeroMode(
-                      key: const ValueKey(
-                        'message-media-image-viewer-hero-mode',
-                      ),
-                      enabled: !_disableHeroOnDismiss,
-                      child: Hero(
-                        tag: widget.heroTag,
-                        child: MediaImage(
-                          url: widget.imageUrl,
-                          boundDecodeToLayout: false,
-                          fit: BoxFit.contain,
-                          semanticLabel: widget.semanticLabel,
-                          errorBuilder: (_, _, _) => const _MediaLoadFailure(
-                            message: 'Failed to load image',
-                            icon: LucideIcons.imageOff,
-                          ),
+                child: Transform.scale(
+                  scale: imageScale,
+                  child: PageView.builder(
+                    key: const ValueKey('message-media-image-viewer-pages'),
+                    controller: _pageController,
+                    physics: _isTransformed
+                        ? const NeverScrollableScrollPhysics()
+                        : const PageScrollPhysics(),
+                    itemCount: _images.length,
+                    onPageChanged: _onPageChanged,
+                    itemBuilder: (context, index) {
+                      final image = _images[index];
+                      final viewPadding = MediaQuery.viewPaddingOf(context);
+                      return Padding(
+                        padding: EdgeInsets.only(
+                          top: viewPadding.top + 48 + Grid.xxs,
+                          bottom: viewPadding.bottom + 56 + Grid.xxs,
                         ),
-                      ),
-                    ),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final viewerSize = _imageViewerSize(
+                              Size(constraints.maxWidth, constraints.maxHeight),
+                              image.aspectRatio,
+                            );
+                            final borderRadius =
+                                _usesPortraitBottomCorners(image.aspectRatio)
+                                ? const BorderRadius.only(
+                                    bottomLeft: Radius.circular(Radii.dialog),
+                                    bottomRight: Radius.circular(Radii.dialog),
+                                  )
+                                : BorderRadius.zero;
+                            return InteractiveViewer(
+                              transformationController:
+                                  _transformationControllers[index],
+                              onInteractionStart: _onImageInteractionStart,
+                              onInteractionUpdate: _onImageInteractionUpdate,
+                              onInteractionEnd: _onImageInteractionEnd,
+                              panEnabled: _isTransformed,
+                              scaleEnabled: true,
+                              minScale: 1,
+                              maxScale: 4,
+                              boundaryMargin: const EdgeInsets.all(Grid.xxl),
+                              clipBehavior: Clip.none,
+                              child: Align(
+                                alignment: Alignment.center,
+                                child: SizedBox(
+                                  width: viewerSize.width,
+                                  height: viewerSize.height,
+                                  child: HeroMode(
+                                    key: index == _initialIndex
+                                        ? const ValueKey(
+                                            'message-media-image-viewer-hero-mode',
+                                          )
+                                        : ValueKey(
+                                            'message-media-image-viewer-hero-mode-$index',
+                                          ),
+                                    enabled:
+                                        !_disableHeroOnDismiss &&
+                                        index == _initialIndex,
+                                    child: MediaViewerHero(
+                                      tag: image.heroTag,
+                                      child: ClipRRect(
+                                        borderRadius: borderRadius,
+                                        child: MediaImage(
+                                          url: image.url,
+                                          decodeWidth: _useFullResolution
+                                              ? null
+                                              : image.previewDecodeWidth,
+                                          boundDecodeToLayout: false,
+                                          fit: BoxFit.contain,
+                                          semanticLabel: image.semanticLabel,
+                                          errorBuilder: (_, _, _) =>
+                                              const _MediaLoadFailure(
+                                                message: 'Failed to load image',
+                                                icon: LucideIcons.imageOff,
+                                              ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
                   ),
                 ),
               ),
             ),
             PositionedDirectional(
-              top: Grid.sm,
-              end: Grid.sm,
-              child: SafeArea(
-                child: DecoratedBox(
-                  decoration: const BoxDecoration(
-                    color: Color.fromRGBO(0, 0, 0, 0.56),
-                    shape: BoxShape.circle,
+              bottom: 0,
+              start: 0,
+              end: 0,
+              child: Opacity(
+                opacity: chromeOpacity,
+                child: SafeArea(
+                  child: _MediaViewerBottomControls(
+                    images: _images,
+                    currentIndex: _currentIndex,
+                    pagePosition: _pagePosition,
+                    onScrubUpdate: _onFilmstripScrubUpdate,
+                    onScrubEnd: _onFilmstripScrubEnd,
+                    onSelect: (index) {
+                      if (index == _currentIndex) return;
+                      _pageController.animateToPage(
+                        index,
+                        duration: MediaQuery.disableAnimationsOf(context)
+                            ? Duration.zero
+                            : const Duration(milliseconds: 220),
+                        curve: Curves.easeOutCubic,
+                      );
+                    },
+                    onReply: widget.onReply == null
+                        ? null
+                        : () => unawaited(_replyInThread()),
+                    onMore: widget.onMore == null ? null : _showMoreActions,
                   ),
-                  child: IconButton(
+                ),
+              ),
+            ),
+            PositionedDirectional(
+              top: 0,
+              end: Grid.sm,
+              child: Opacity(
+                opacity: chromeOpacity,
+                child: SafeArea(
+                  child: _MediaViewerCircleButton(
                     key: const ValueKey('message-media-image-viewer-close'),
-                    onPressed: _dismiss,
+                    icon: LucideIcons.x,
                     tooltip: 'Close image viewer',
-                    icon: const Icon(LucideIcons.x, color: Colors.white),
+                    onPressed: () => unawaited(_dismiss()),
                   ),
                 ),
               ),
@@ -313,6 +721,275 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
       ),
     );
   }
+}
+
+class _MediaViewerBottomControls extends StatelessWidget {
+  final List<MediaViewerImage> images;
+  final int currentIndex;
+  final ValueListenable<double> pagePosition;
+  final ValueChanged<double> onScrubUpdate;
+  final VoidCallback onScrubEnd;
+  final ValueChanged<int> onSelect;
+  final VoidCallback? onReply;
+  final VoidCallback? onMore;
+
+  const _MediaViewerBottomControls({
+    required this.images,
+    required this.currentIndex,
+    required this.pagePosition,
+    required this.onScrubUpdate,
+    required this.onScrubEnd,
+    required this.onSelect,
+    required this.onReply,
+    required this.onMore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: Grid.sm),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          _MediaViewerCircleButton(
+            key: const ValueKey('message-media-image-viewer-reply-thread'),
+            icon: LucideIcons.messageSquareReply,
+            tooltip: 'Reply in thread',
+            onPressed: onReply,
+          ),
+          const SizedBox(width: Grid.xxs),
+          Expanded(
+            child: images.length > 1
+                ? _MediaViewerFilmstrip(
+                    key: const ValueKey('message-media-image-viewer-filmstrip'),
+                    images: images,
+                    currentIndex: currentIndex,
+                    pagePosition: pagePosition,
+                    onScrubUpdate: onScrubUpdate,
+                    onScrubEnd: onScrubEnd,
+                    onSelect: onSelect,
+                  )
+                : const SizedBox(height: 56),
+          ),
+          const SizedBox(width: Grid.xxs),
+          _MediaViewerCircleButton(
+            key: const ValueKey('message-media-image-viewer-more-actions'),
+            icon: LucideIcons.ellipsis,
+            tooltip: 'More image actions',
+            onPressed: onMore,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MediaViewerFilmstrip extends StatelessWidget {
+  final List<MediaViewerImage> images;
+  final int currentIndex;
+  final ValueListenable<double> pagePosition;
+  final ValueChanged<double> onScrubUpdate;
+  final VoidCallback onScrubEnd;
+  final ValueChanged<int> onSelect;
+
+  const _MediaViewerFilmstrip({
+    super.key,
+    required this.images,
+    required this.currentIndex,
+    required this.pagePosition,
+    required this.onScrubUpdate,
+    required this.onScrubEnd,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: RepaintBoundary(
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (details) =>
+              onScrubUpdate(details.primaryDelta ?? 0),
+          onHorizontalDragEnd: (_) => onScrubEnd(),
+          child: ValueListenableBuilder<double>(
+            valueListenable: pagePosition,
+            builder: (context, position, _) {
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  const compactWidth = 40.0;
+                  const focusedWidth = 72.0;
+                  const itemHeight = 52.0;
+                  const spacing = Grid.half;
+                  final clampedPosition = position
+                      .clamp(0.0, images.length - 1.0)
+                      .toDouble();
+                  final widths = <double>[];
+                  final proximities = <double>[];
+                  final centers = <double>[];
+                  var cursor = 0.0;
+
+                  for (var index = 0; index < images.length; index++) {
+                    final proximity = (1 - (index - clampedPosition).abs())
+                        .clamp(0.0, 1.0)
+                        .toDouble();
+                    final width =
+                        compactWidth +
+                        ((focusedWidth - compactWidth) * proximity);
+                    widths.add(width);
+                    proximities.add(proximity);
+                    centers.add(cursor + (width / 2));
+                    cursor += width + spacing;
+                  }
+
+                  final lowerIndex = clampedPosition.floor();
+                  final upperIndex = clampedPosition.ceil();
+                  final fraction = clampedPosition - lowerIndex;
+                  final lowerCenter = centers[lowerIndex];
+                  final upperCenter = centers[upperIndex];
+                  final focusCenter =
+                      lowerCenter + ((upperCenter - lowerCenter) * fraction);
+                  final viewportCenter = constraints.maxWidth / 2;
+
+                  return Stack(
+                    clipBehavior: Clip.hardEdge,
+                    children: [
+                      for (var index = 0; index < images.length; index++)
+                        Positioned(
+                          left:
+                              viewportCenter +
+                              centers[index] -
+                              focusCenter -
+                              (widths[index] / 2),
+                          top: Grid.quarter,
+                          width: widths[index],
+                          height: itemHeight,
+                          child: _MediaViewerFilmstripImage(
+                            image: images[index],
+                            index: index,
+                            proximity: proximities[index],
+                            selected: index == currentIndex,
+                            onSelect: onSelect,
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MediaViewerFilmstripImage extends StatelessWidget {
+  final MediaViewerImage image;
+  final int index;
+  final double proximity;
+  final bool selected;
+  final ValueChanged<int> onSelect;
+
+  const _MediaViewerFilmstripImage({
+    required this.image,
+    required this.index,
+    required this.proximity,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: selected
+          ? 'Image ${index + 1}, selected'
+          : 'Show image ${index + 1}',
+      child: GestureDetector(
+        key: ValueKey('message-media-image-viewer-thumbnail:$index'),
+        onTap: () => onSelect(index),
+        child: Container(
+          height: 52,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(Radii.sm),
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.28 + (0.72 * proximity)),
+              width: 1 + (1.5 * proximity),
+            ),
+          ),
+          child: Opacity(
+            opacity: 0.62 + (0.38 * proximity),
+            child: MediaImage(
+              url: image.url,
+              decodeWidth: 72,
+              fit: BoxFit.cover,
+              semanticLabel: image.semanticLabel,
+              errorBuilder: (_, _, _) => const ColoredBox(
+                color: Color.fromRGBO(255, 255, 255, 0.12),
+                child: Icon(
+                  LucideIcons.imageOff,
+                  color: Colors.white70,
+                  size: 18,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MediaViewerCircleButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  const _MediaViewerCircleButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 48,
+      child: onPressed == null
+          ? const SizedBox.shrink()
+          : DecoratedBox(
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.16),
+                shape: BoxShape.circle,
+              ),
+              child: IconButton(
+                onPressed: onPressed,
+                tooltip: tooltip,
+                icon: Icon(icon, color: Colors.white, size: 20),
+              ),
+            ),
+    );
+  }
+}
+
+Size _imageViewerSize(Size viewport, double? aspectRatio) {
+  if (aspectRatio == null || aspectRatio <= 0) {
+    return viewport;
+  }
+
+  final safeAspectRatio = aspectRatio.clamp(0.05, 20.0).toDouble();
+  if (viewport.aspectRatio > safeAspectRatio) {
+    return Size(viewport.height * safeAspectRatio, viewport.height);
+  }
+  return Size(viewport.width, viewport.width / safeAspectRatio);
+}
+
+bool _usesPortraitBottomCorners(double? aspectRatio) {
+  return aspectRatio != null && aspectRatio > 0 && aspectRatio < 1;
 }
 
 bool _hasImageTransform(Matrix4 transform) {
@@ -462,7 +1139,12 @@ class _VideoLoadingPoster extends StatelessWidget {
           else
             _videoPlaceholder(context),
           const ColoredBox(color: Color.fromRGBO(0, 0, 0, 0.24)),
-          const Center(child: CircularProgressIndicator()),
+          const Center(
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              color: Colors.white,
+            ),
+          ),
         ],
       ),
     );

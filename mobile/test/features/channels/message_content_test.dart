@@ -182,11 +182,22 @@ void main() {
       );
 
       expect(route, isA<PageRouteBuilder<void>>());
-      expect(route.transitionDuration, const Duration(milliseconds: 280));
+      expect(route.transitionDuration, const Duration(milliseconds: 260));
       expect(
         route.reverseTransitionDuration,
-        const Duration(milliseconds: 220),
+        const Duration(milliseconds: 170),
       );
+    });
+
+    test('buildImageViewerRoute disables motion when requested', () {
+      final route = buildImageViewerRoute(
+        imageUrl: 'https://example.com/media/image.png',
+        heroTag: Object(),
+        disableAnimations: true,
+      );
+
+      expect(route.transitionDuration, Duration.zero);
+      expect(route.reverseTransitionDuration, Duration.zero);
     });
 
     group('plain text', () {
@@ -429,6 +440,65 @@ void main() {
           findsOneWidget,
         );
       });
+
+      testWidgets(
+        'groups uploaded photos into a carousel and opens the full gallery',
+        (tester) async {
+          const first = 'https://example.com/media/one.png';
+          const second = 'https://example.com/media/two.png';
+          const third = 'https://example.com/media/three.png';
+          await tester.pumpWidget(
+            _testable(
+              const MessageContent(
+                content:
+                    '''
+Photos
+![image]($first)
+![image]($second)
+![image]($third)
+''',
+                tags: [
+                  ['imeta', 'url $first', 'm image/png', 'alt First photo'],
+                  ['imeta', 'url $second', 'm image/png', 'alt Second photo'],
+                  ['imeta', 'url $third', 'm image/png', 'alt Third photo'],
+                ],
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+
+          final carousel = find.byKey(const ValueKey('message-media-carousel'));
+          expect(carousel, findsOneWidget);
+          expect(find.text('3 images'), findsOneWidget);
+
+          await tester.drag(carousel, const Offset(-600, 0));
+          await tester.pumpAndSettle();
+
+          await tester.tap(
+            find.byKey(const ValueKey('message-media-carousel-item:$second')),
+          );
+          await tester.pumpAndSettle();
+
+          expect(
+            find.byKey(const ValueKey('message-media-image-viewer')),
+            findsOneWidget,
+          );
+          expect(
+            find.byKey(const ValueKey('message-media-image-viewer-position')),
+            findsOneWidget,
+          );
+          expect(find.text('2 / 3'), findsOneWidget);
+
+          await tester.fling(
+            find.byKey(const ValueKey('message-media-image-viewer-pages')),
+            const Offset(-700, 0),
+            1200,
+          );
+          await tester.pumpAndSettle();
+
+          expect(find.text('3 / 3'), findsOneWidget);
+        },
+      );
 
       testWidgets(
         'disables hero on close after the fullscreen image is transformed',
