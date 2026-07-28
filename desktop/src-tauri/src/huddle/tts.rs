@@ -93,23 +93,6 @@ const FADE_OUT_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
 #[cfg(test)]
 const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 
-/// Approximate character budget for one synthesis chunk.
-///
-/// Upstream pocket-tts groups sentences into chunks of up to
-/// `MAX_TOKEN_PER_CHUNK = 50` tokenizer tokens (`default_parameters.py`) —
-/// typically multi-sentence chunks — because every `generate()` call is an
-/// independent generation with a cold FlowLM start, and each chunk boundary
-/// is an exposed prosody seam (kyutai-labs/pocket-tts #151; the Kyutai team
-/// names chunk stitching as the reliability lever). Our previous
-/// sentence-per-call path created ~2–4× more seams than upstream.
-///
-/// We don't ship the SentencePiece tokenizer, so 50 tokens is approximated
-/// with a character budget. The bundled 4k-entry vocab averages ~4 chars per
-/// token, but usage-weighted English text leans on short common tokens, so
-/// the effective ratio is ~2–4 chars/token and 200 chars ≈ 60–100 tokens —
-/// modestly above upstream's 50, deliberately: erring large means fewer
-/// seams, and even ~100 tokens is far below the model's 500-LM-step (~40 s)
-/// ceiling. Do not shrink this budget to chase an exact 50-token match.
 // ── Public pipeline handle ────────────────────────────────────────────────────
 
 /// Handle to the running TTS pipeline.

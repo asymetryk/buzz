@@ -130,15 +130,13 @@ pub extern "C" fn buzz_voice_engine_synthesize(
     // not overlap. Cancellation only touches the atomic flag.
     let engine = unsafe { &*(engine.cast::<Engine>()) };
     let cancelled = Arc::clone(&engine.cancelled);
-    let samples = match engine
-        .tts
-        .synth_chunk_with_callback(
-            &text,
-            "en",
-            &engine.voice,
-            1,
-            Some(move |_: &[f32], _| !cancelled.load(Ordering::Acquire)),
-        ) {
+    let samples = match engine.tts.synth_chunk_with_callback(
+        &text,
+        "en",
+        &engine.voice,
+        1,
+        Some(move |_: &[f32], _| !cancelled.load(Ordering::Acquire)),
+    ) {
         Ok(value) => value,
         Err(error) => return pcm_error(error),
     };
