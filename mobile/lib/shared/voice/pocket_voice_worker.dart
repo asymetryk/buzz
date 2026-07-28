@@ -244,10 +244,7 @@ void _workerMain((SendPort, String) startup) {
                     : PocketWorkerFailureKind.synthesis,
                 error.toString(),
                 generation: command.generation,
-                remainingTextChunks:
-                    error.toString().contains('synthesis cancelled')
-                    ? const []
-                    : chunks.sublist(index),
+                remainingTextChunks: chunks.sublist(index),
               ),
             );
             break;

@@ -94,6 +94,12 @@ class SystemTtsCallbackFenceTest {
     }
 
     @Test
+    fun `utterance callback registration must succeed`() {
+        assertTrue(isUsableSystemTtsListenerRegistration(TextToSpeech.SUCCESS))
+        assertFalse(isUsableSystemTtsListenerRegistration(TextToSpeech.ERROR))
+    }
+
+    @Test
     fun `only real trim pressure disables Pocket`() {
         assertTrue(
             shouldDisablePocketForTrimMemory(

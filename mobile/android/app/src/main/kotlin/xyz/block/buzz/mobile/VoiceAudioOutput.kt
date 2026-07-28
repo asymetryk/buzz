@@ -30,6 +30,9 @@ internal fun shouldStopPocketVoiceForAudioFocusChange(change: Int): Boolean =
 internal fun isUsableSystemTtsLanguage(status: Int): Boolean =
     status >= TextToSpeech.LANG_AVAILABLE
 
+internal fun isUsableSystemTtsListenerRegistration(status: Int): Boolean =
+    status == TextToSpeech.SUCCESS
+
 internal fun isUsableSystemTtsInitialization(
     initializationStatus: Int,
     languageStatus: Int?,
@@ -247,7 +250,15 @@ internal class VoiceAudioOutput(
                             return@post
                         }
                         engine.setAudioAttributes(speechAudioAttributes())
-                        engine.setOnUtteranceProgressListener(ttsProgressListener)
+                        val listenerStatus =
+                            engine.setOnUtteranceProgressListener(ttsProgressListener)
+                        if (!isUsableSystemTtsListenerRegistration(listenerStatus)) {
+                            engine.shutdown()
+                            finishTtsInitializationFailure(
+                                "Default text-to-speech callbacks are unavailable.",
+                            )
+                            return@post
+                        }
                         textToSpeech = engine
                         ttsInitializing = false
                         val callbacks = pendingTtsReady.toList()
@@ -305,7 +316,7 @@ internal class VoiceAudioOutput(
                 utteranceId: String?,
                 interrupted: Boolean,
             ) {
-                if (!interrupted) finishSystemSpeech(utteranceId, successful = false)
+                finishSystemSpeech(utteranceId, successful = false)
             }
         }
 

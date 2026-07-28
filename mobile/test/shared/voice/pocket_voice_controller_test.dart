@@ -150,6 +150,33 @@ void main() {
     },
   );
 
+  test(
+    'ignores a stale cancellation after steering starts new speech',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'Before steering.');
+      await notifier.interrupt();
+      notifier.speak('conversation', 'After steering.');
+      await _flush();
+      expect(worker.syntheses, [
+        (1, 'Before steering.'),
+        (2, 'After steering.'),
+      ]);
+
+      worker.emitCancelled(1);
+      worker.emitAudio(2, [1, 2], isLast: true);
+      await _flush();
+
+      expect(output.played.single.$3, 2);
+    },
+  );
+
   test('surfaces asynchronous native playback errors', () async {
     final worker = _FakeWorker();
     final output = _FakeAudioOutput();
@@ -386,6 +413,36 @@ void main() {
     );
   });
 
+  test(
+    'steering during Pocket promotion preserves the replacement request',
+    () async {
+      final worker = _FakeWorker(startPaused: true);
+      final output = _FakeAudioOutput();
+      final container = _container(
+        worker,
+        output,
+        modelFactory: _MutablePocketModelNotifier.new,
+      );
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+      final model =
+          container.read(pocketModelProvider.notifier)
+              as _MutablePocketModelNotifier;
+
+      await notifier.enable('conversation');
+      model.makeReady();
+      notifier.speak('conversation', 'Superseded.');
+      await _flush();
+      final interrupting = notifier.interrupt();
+      notifier.speak('conversation', 'After steering.');
+      worker.finishStart();
+      await interrupting;
+      await _flush();
+
+      expect(worker.syntheses, [(1, 'After steering.')]);
+    },
+  );
+
   test('resource pressure parks Pocket until the next foreground', () async {
     final firstWorker = _FakeWorker();
     final recoveredWorker = _FakeWorker();
@@ -449,6 +506,47 @@ void main() {
       notifier.speak('conversation', 'Now use system speech.');
       await _flush();
       expect(output.systemSpoken.single.$1, 'Now use system speech.');
+    },
+  );
+
+  test(
+    'resource pressure parks Pocket after active synthesis cancels',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'Cancelled by pressure.');
+      await _flush();
+      worker.emitAudio(1, [1, 2], isLast: false);
+      await _flush();
+      expect(output.played.single.$1, [1, 2]);
+      output.resourcePressure();
+      await _flush();
+      expect(worker.cancelCount, greaterThan(0));
+
+      worker.emitCancelled(
+        1,
+        remainingTextChunks: const ['Unspoken remainder.'],
+      );
+      await _flush();
+
+      expect(worker.disposeCount, 1);
+      expect(output.systemSpoken, isEmpty);
+      output.complete();
+      await _flush();
+      expect(output.systemSpoken.single.$1, 'Unspoken remainder.');
+      expect(
+        output.systemSpoken.map((speech) => speech.$1),
+        isNot(contains('Cancelled by pressure.')),
+      );
+      expect(
+        container.read(pocketVoiceProvider).fallbackReason,
+        PocketVoiceFallbackReason.resourcePressure,
+      );
     },
   );
 }
@@ -570,6 +668,21 @@ class _FakeWorker extends PocketVoiceWorker {
       PocketWorkerFailure(
         PocketWorkerFailureKind.synthesis,
         'Pocket synthesis failed.',
+        generation: generation,
+        remainingTextChunks: remainingTextChunks,
+      ),
+    );
+  }
+
+  void emitCancelled(
+    int generation, {
+    List<String> remainingTextChunks = const [],
+  }) {
+    _synthesizing = false;
+    _controller.add(
+      PocketWorkerFailure(
+        PocketWorkerFailureKind.cancelled,
+        'Pocket synthesis cancelled.',
         generation: generation,
         remainingTextChunks: remainingTextChunks,
       ),

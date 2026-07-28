@@ -333,12 +333,20 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
 
   Future<void> _startNextUtteranceAsync() async {
     final next = _utterances.first;
+    final transitionEpoch = _transitionEpoch;
     if (!next.systemOnly &&
         state.backend == PocketVoiceBackend.androidSystem &&
         _pocketRetryAllowed) {
       await _tryPromotePocket();
     }
-    if (_stopping || !state.enabled || _activeGeneration != null) return;
+    if (transitionEpoch != _transitionEpoch ||
+        _stopping ||
+        !state.enabled ||
+        _activeGeneration != null ||
+        _utterances.isEmpty ||
+        !identical(_utterances.first, next)) {
+      return;
+    }
 
     var request = _utterances.removeFirst();
     final generation = ++_nextGeneration;
@@ -443,8 +451,18 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
         _synthesisComplete = true;
         if (!_playbackActive && _audio.isEmpty) _finishUtterance();
       case PocketWorkerFailure():
+        if (response.generation != _activeGeneration ||
+            _activeBackend != PocketVoiceBackend.pocket ||
+            _stopping) {
+          return;
+        }
         if (response.kind == PocketWorkerFailureKind.cancelled) {
-          _finishUtterance();
+          if (state.fallbackReason ==
+              PocketVoiceFallbackReason.resourcePressure) {
+            _handlePocketFailure(response);
+          } else {
+            _finishUtterance();
+          }
           return;
         }
         _handlePocketFailure(response);
