@@ -493,6 +493,10 @@ Photos
             ),
             findsOneWidget,
           );
+          final displayedImage = tester.widget<MediaImage>(
+            find.byKey(const ValueKey('message-media-image-viewer-image:1')),
+          );
+          expect(displayedImage.decodeWidth, isNotNull);
 
           await tester.fling(
             find.byKey(const ValueKey('message-media-image-viewer-pages')),

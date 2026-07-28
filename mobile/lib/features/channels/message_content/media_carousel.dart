@@ -23,6 +23,39 @@ class _TrailingImageGallery {
   const _TrailingImageGallery({required this.content, required this.items});
 }
 
+class _MessageGalleryPrecache extends HookWidget {
+  final List<ImageProvider<Object>> providers;
+  final int focusedIndex;
+
+  const _MessageGalleryPrecache({
+    required this.providers,
+    required this.focusedIndex,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final providerSignature = Object.hashAll(providers);
+    useEffect(() {
+      var cancelled = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (cancelled || !context.mounted) {
+          return;
+        }
+        for (var index = focusedIndex - 2; index <= focusedIndex + 2; index++) {
+          if (index < 0 || index >= providers.length) {
+            continue;
+          }
+          unawaited(
+            precacheImage(providers[index], context, onError: (_, _) {}),
+          );
+        }
+      });
+      return () => cancelled = true;
+    }, [focusedIndex, providerSignature]);
+    return const SizedBox.shrink();
+  }
+}
+
 _TrailingImageGallery? _extractTrailingImageGallery(
   String content,
   Map<String, ImetaEntry> imetaByUrl,
@@ -93,31 +126,6 @@ class _MessageImageCarousel extends HookConsumerWidget {
     final mediaAuth = ref.watch(mediaGetAuthServiceProvider);
     final mediaClient = ref.watch(mediaHttpClientProvider);
 
-    useEffect(() {
-      var cancelled = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (cancelled || !context.mounted) {
-          return;
-        }
-        for (
-          var index = currentIndex.value - 2;
-          index <= currentIndex.value + 2;
-          index++
-        ) {
-          if (index < 0 || index >= items.length) {
-            continue;
-          }
-          final provider = MediaImageProvider(
-            url: items[index].url,
-            auth: mediaAuth,
-            client: mediaClient,
-          );
-          unawaited(precacheImage(provider, context, onError: (_, _) {}));
-        }
-      });
-      return () => cancelled = true;
-    }, [itemSignature, currentIndex.value, mediaAuth, mediaClient]);
-
     return Padding(
       padding: const EdgeInsets.only(top: Grid.half),
       child: Column(
@@ -151,6 +159,19 @@ class _MessageImageCarousel extends HookConsumerWidget {
                         (index == items.length - 1 ? 0 : Grid.half),
                   ),
               ];
+              final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
+              final previewProviders = [
+                for (var index = 0; index < items.length; index++)
+                  ResizeImage.resizeIfNeeded(
+                    (previewDecodeWidths[index] * devicePixelRatio).ceil(),
+                    null,
+                    MediaImageProvider(
+                      url: items[index].url,
+                      auth: mediaAuth,
+                      client: mediaClient,
+                    ),
+                  ),
+              ];
               final viewerItems = [
                 for (var index = 0; index < items.length; index++)
                   MediaViewerImage(
@@ -159,11 +180,7 @@ class _MessageImageCarousel extends HookConsumerWidget {
                     semanticLabel: items[index].semanticLabel,
                     previewDecodeWidth: previewDecodeWidths[index],
                     aspectRatio: items[index].aspectRatio,
-                    preloadProvider: MediaImageProvider(
-                      url: items[index].url,
-                      auth: mediaAuth,
-                      client: mediaClient,
-                    ),
+                    preloadProvider: previewProviders[index],
                   ),
               ];
               final carousel = SizedBox(
@@ -236,7 +253,20 @@ class _MessageImageCarousel extends HookConsumerWidget {
                 ),
               );
 
-              if (leadingExtent <= 0 && trailingOverflow <= 0) return carousel;
+              final carouselSurface = Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  carousel,
+                  _MessageGalleryPrecache(
+                    providers: previewProviders,
+                    focusedIndex: currentIndex.value,
+                  ),
+                ],
+              );
+
+              if (leadingExtent <= 0 && trailingOverflow <= 0) {
+                return carouselSurface;
+              }
               return SizedBox(
                 width: contentWidth,
                 height: _messageMediaCarouselHeight,
@@ -249,7 +279,7 @@ class _MessageImageCarousel extends HookConsumerWidget {
                       isLeftToRight ? -leadingExtent : leadingExtent,
                       0,
                     ),
-                    child: carousel,
+                    child: carouselSurface,
                   ),
                 ),
               );

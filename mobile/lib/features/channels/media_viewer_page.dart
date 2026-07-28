@@ -41,7 +41,7 @@ class MediaViewerImage {
   /// The image's intrinsic width-to-height ratio, when provided by metadata.
   final double? aspectRatio;
 
-  /// A full-resolution provider that can be warmed before this page is shown.
+  /// A display-sized provider that can be warmed before this page is shown.
   final ImageProvider<Object>? preloadProvider;
 
   /// Creates a media-viewer image.
@@ -277,12 +277,10 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
   late final List<TransformationController> _transformationControllers;
   late final List<VoidCallback> _transformationListeners;
   late final AnimationController _snapBackController;
-  Animation<double>? _routeAnimation;
+  final Set<int> _fullResolutionIndices = <int>{};
   late int _currentIndex;
   bool _isTransformed = false;
   bool _disableHeroOnDismiss = false;
-  bool _useFullResolution = false;
-  bool _fullResolutionUpgradeScheduled = false;
   double _dragOffset = 0;
   bool _isDragging = false;
 
@@ -327,42 +325,7 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final nextRouteAnimation = ModalRoute.of(context)?.animation;
-    if (identical(_routeAnimation, nextRouteAnimation)) {
-      return;
-    }
-
-    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
-    _routeAnimation = nextRouteAnimation;
-    if (nextRouteAnimation == null ||
-        nextRouteAnimation.status == AnimationStatus.completed) {
-      _scheduleFullResolutionUpgrade();
-    } else {
-      nextRouteAnimation.addStatusListener(_handleRouteAnimationStatus);
-    }
     _precacheViewerImages(context, _images, _currentIndex);
-  }
-
-  void _handleRouteAnimationStatus(AnimationStatus status) {
-    if (status != AnimationStatus.completed || _useFullResolution || !mounted) {
-      return;
-    }
-    _scheduleFullResolutionUpgrade();
-  }
-
-  void _scheduleFullResolutionUpgrade() {
-    if (_fullResolutionUpgradeScheduled || _useFullResolution) {
-      return;
-    }
-    _fullResolutionUpgradeScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _useFullResolution = true;
-      });
-    });
   }
 
   @override
@@ -377,7 +340,6 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     _pageController.dispose();
     _pagePosition.dispose();
     _snapBackController.dispose();
-    _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
     super.dispose();
   }
 
@@ -451,16 +413,25 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     );
   }
 
-  void _onImageInteractionStart(ScaleStartDetails details) {
+  void _onImageInteractionStart(int index, ScaleStartDetails details) {
+    if (details.pointerCount > 1) {
+      _upgradeToFullResolution(index);
+    }
     if (details.pointerCount == 1 && !_isTransformed) {
       _isDragging = true;
     }
   }
 
-  void _onImageInteractionUpdate(ScaleUpdateDetails details) {
+  void _onImageInteractionUpdate(int index, ScaleUpdateDetails details) {
     if (details.pointerCount > 1 || details.scale != 1) {
-      if (_isDragging) {
+      final needsFullResolution =
+          _images[index].previewDecodeWidth != null &&
+          !_fullResolutionIndices.contains(index);
+      if (_isDragging || needsFullResolution) {
         setState(() {
+          if (needsFullResolution) {
+            _fullResolutionIndices.add(index);
+          }
           _isDragging = false;
           _dragOffset = 0;
         });
@@ -475,6 +446,14 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
         MediaQuery.sizeOf(context).height,
       );
     });
+  }
+
+  void _upgradeToFullResolution(int index) {
+    if (_images[index].previewDecodeWidth == null ||
+        _fullResolutionIndices.contains(index)) {
+      return;
+    }
+    setState(() => _fullResolutionIndices.add(index));
   }
 
   void _onImageInteractionEnd(ScaleEndDetails details) {
@@ -614,8 +593,10 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
                             return InteractiveViewer(
                               transformationController:
                                   _transformationControllers[index],
-                              onInteractionStart: _onImageInteractionStart,
-                              onInteractionUpdate: _onImageInteractionUpdate,
+                              onInteractionStart: (details) =>
+                                  _onImageInteractionStart(index, details),
+                              onInteractionUpdate: (details) =>
+                                  _onImageInteractionUpdate(index, details),
                               onInteractionEnd: _onImageInteractionEnd,
                               panEnabled: _isTransformed,
                               scaleEnabled: true,
@@ -642,8 +623,14 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
                                     child: MediaViewerHero(
                                       tag: image.heroTag,
                                       child: MediaImage(
+                                        key: ValueKey(
+                                          'message-media-image-viewer-image:$index',
+                                        ),
                                         url: image.url,
-                                        decodeWidth: _useFullResolution
+                                        decodeWidth:
+                                            _fullResolutionIndices.contains(
+                                              index,
+                                            )
                                             ? null
                                             : image.previewDecodeWidth,
                                         boundDecodeToLayout: false,
