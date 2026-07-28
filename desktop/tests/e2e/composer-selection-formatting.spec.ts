@@ -320,14 +320,41 @@ test("partial list-item selections snap to whole items for block formats", async
       .getByRole("button", { name: format })
       .click();
 
-    await expect(input).toContainText("before");
-    await expect(input).toContainText("first");
-    await expect(input).toContainText("second");
-    await expect(input).toContainText("after");
-    await expect(input.locator(":scope > ul li")).toContainText([
-      "before",
-      "after",
-    ]);
+    const structure = await input.locator(":scope > *").evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        tag: node.tagName.toLowerCase(),
+        text: node.textContent,
+        items: Array.from(
+          node.querySelectorAll(":scope > li"),
+          (item) => item.textContent,
+        ),
+      })),
+    );
+    const expected = {
+      "Code block": [
+        { tag: "ul", text: "before", items: ["before"] },
+        { tag: "pre", text: "first\nsecond", items: [] },
+        { tag: "ul", text: "after", items: ["after"] },
+      ],
+      "Bullet list": [
+        {
+          tag: "ul",
+          text: "beforefirstsecondafter",
+          items: ["before", "first", "second", "after"],
+        },
+      ],
+      "Ordered list": [
+        { tag: "ul", text: "before", items: ["before"] },
+        { tag: "ol", text: "firstsecond", items: ["first", "second"] },
+        { tag: "ul", text: "after", items: ["after"] },
+      ],
+      Quote: [
+        { tag: "ul", text: "before", items: ["before"] },
+        { tag: "blockquote", text: "firstsecond", items: [] },
+        { tag: "ul", text: "after", items: ["after"] },
+      ],
+    }[format];
+    expect(structure).toEqual(expected);
     await page.reload();
   }
 });
