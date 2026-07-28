@@ -218,15 +218,8 @@ build_android_abi() {
 
   local destination="${generated_root}/android/jniLibs/${abi}"
   mkdir -p "$destination"
-  local shared_library=""
-  local candidate
-  for candidate in "${repo_root}/target/${target}/release/deps/"libbuzz_voice_mobile-*.so; do
-    if [[ -f "$candidate" ]] &&
-      { [[ -z "$shared_library" ]] || [[ "$candidate" -nt "$shared_library" ]]; }; then
-      shared_library="$candidate"
-    fi
-  done
-  if [[ -z "$shared_library" ]]; then
+  local shared_library="${repo_root}/target/${target}/release/libbuzz_voice_mobile.so"
+  if [[ ! -f "$shared_library" ]]; then
     echo "Android cdylib was not produced for $target" >&2
     exit 1
   fi

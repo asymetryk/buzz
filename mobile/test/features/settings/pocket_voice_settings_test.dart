@@ -57,7 +57,7 @@ void main() {
 
     // Flutter's text rasterization differs between macOS and the Linux CI
     // runner even with the same bundled fonts. Keep the pixel baseline on the
-    // platform that produces the reviewer screenshot; the assertions above
+    // platform that owns the pixel baseline; the assertions above
     // remain the cross-platform contract for the download state.
     if (Platform.isMacOS) {
       await expectLater(

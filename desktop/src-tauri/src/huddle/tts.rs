@@ -48,6 +48,8 @@ use std::{
 
 use super::pocket::{load_text_to_speech, load_voice_style, SAMPLE_RATE, VOICE_FILE_EXT};
 use super::preprocessing::{prepare_tts_chunks, shape_tts_chunk};
+#[cfg(test)]
+use buzz_voice_pkg::preparation::group_sentences_into_chunks;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -68,30 +70,6 @@ const MONITOR_TICK: Duration = Duration::from_millis(10);
 
 /// Pocket TTS is a one-step consistency model, not diffusion. Kept for API compat.
 const SYNTH_STEPS: usize = 1;
-
-/// Fade-out length in samples (8 ms at 24 kHz ≈ 192 samples).
-///
-/// Applied only at the *end* of each synthesised sentence to eliminate the
-/// click that would otherwise occur when a non-zero waveform terminates
-/// abruptly. **No fade-in is applied** — see `apply_fade_out` for the
-/// rationale and `examples/pocket_onset_probe.rs` for the measurement that
-/// motivated removing the leading fade.
-#[cfg(test)]
-const FADE_OUT_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.008) as usize;
-
-/// Length of the zero-sample cushion prepended before each synthesized
-/// sentence chunk, so the OS audio device / rodio mixer has a fully-quiet
-/// ramp-up window before the real onset hits.
-///
-/// This used to be applied only before the first sentence of a whole response.
-/// That still left later sentence chunks vulnerable to first-syllable clipping
-/// when their first phoneme was soft (notably `I'm` / `I've`) and rodio crossed
-/// from an explicit silence buffer straight into non-zero speech. 20 ms ≈ 480
-/// samples is enough to cover a CoreAudio buffer turnover without being audible
-/// as latency. At sentence boundaries this lead-in is budgeted out of the
-/// existing inter-sentence pause, so it does not lengthen multi-sentence gaps.
-#[cfg(test)]
-const SENTENCE_LEAD_IN_SAMPLES: usize = (SAMPLE_RATE as f64 * 0.020) as usize;
 
 // ── Public pipeline handle ────────────────────────────────────────────────────
 
@@ -397,9 +375,8 @@ fn tts_worker(
     // whenever the player has fully drained — either in the idle timeout
     // arm or on item receipt before synthesis begins.
     // `first_append` = "no audio queued since the player last went idle".
-    // Flipped by `build_sentence_append_buffer` on the first real append; the
-    // idle branch below uses it to decide when to drop `tts_active` and to
-    // arm a fresh lead-in cushion for the next utterance.
+    // The first successful append clears it; the idle branch below uses it to
+    // decide when to drop `tts_active`.
     let mut first_append = true;
 
     loop {
@@ -604,111 +581,6 @@ fn handle_cancel_or_shutdown(
 /// vice versa) on `unwrap()`.
 fn lock_player_ops(ops: &Mutex<()>) -> MutexGuard<'_, ()> {
     ops.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Hard-clamp samples to ±1.0 full scale.
-///
-/// No gain is applied: Pocket TTS already emits speech-level audio
-/// (peaks 0.4–0.97, RMS ≈ −20 dBFS across varied sentences — measured by
-/// `examples/pocket_clip_probe`), matching the kyutai reference pipeline,
-/// which applies no output scaling. Two earlier gain stages were both
-/// regressions against that baseline: per-sentence peak normalization caused
-/// level pumping between sentences, and the fixed 9.3× gain that replaced it
-/// was calibrated on a single anomalously-quiet bench utterance (peak 0.076)
-/// and clipped 13–34% of samples on real speech ("blown out", 2026-06-12).
-/// The clamp alone remains as the safety net against outlier transients.
-#[cfg(test)]
-fn clamp_to_full_scale(samples: Vec<f32>) -> Vec<f32> {
-    samples.into_iter().map(|s| s.clamp(-1.0, 1.0)).collect()
-}
-
-/// Apply a short linear fade-out at the *end* of `samples`.
-///
-/// Uses `FADE_OUT_SAMPLES` (8 ms) or half the buffer length, whichever is
-/// smaller. Eliminates the click that occurs when a non-zero waveform
-/// terminates abruptly at a sentence boundary.
-///
-/// # Why no fade-in
-///
-/// An earlier revision (pre 2026-05) symmetrically faded *in* over the same
-/// 8 ms window. That swallowed the leading consonant attack on every
-/// sentence — Pocket TTS produces real audio energy inside the first
-/// millisecond (RMS ≈ 0.02, peak ≈ 0.03 measured across four prompts in
-/// `examples/pocket_onset_probe.rs`), and a linear 0→1 ramp over 192 samples
-/// scales those onset samples by ≤50 % for the first ~4 ms. The result was
-/// the "first little sound or two is missing" regression heard on
-/// 2026-05-18.
-///
-/// The first sample of Pocket output measures ≈ 0.0018 (≈ −54 dBFS) — well
-/// below the threshold at which a DC-jump would be audible as a click — so
-/// no fade-in is needed. The OS audio device gets its quiet ramp-up window
-/// from `SENTENCE_LEAD_IN_SAMPLES` instead, inserted as pure silence before
-/// each sentence buffer.
-#[cfg(test)]
-fn apply_fade_out(samples: &mut [f32]) {
-    let len = samples.len();
-    let fade = FADE_OUT_SAMPLES.min(len / 2);
-    for i in 0..fade {
-        samples[len - 1 - i] *= i as f32 / fade as f32;
-    }
-}
-
-/// Build the single buffer appended to the rodio `Player` for one synthesised
-/// sentence.
-///
-/// Every sentence chunk gets a short lead-in pad immediately before its audio.
-/// This matters for chunks that start with soft first phonemes (`I'm`, `I've`):
-/// the synthesized buffer can begin with speech within the first millisecond,
-/// so the playback layer must provide the device/mixer cushion.
-/// To keep the audible gap unchanged, the trailing silence after this chunk is
-/// shortened by the same amount (`silence_buf_len - SENTENCE_LEAD_IN_SAMPLES`):
-/// sentence N contributes 80 ms of post-speech silence and sentence N+1
-/// contributes the remaining 20 ms of pre-speech cushion.
-///
-/// The lead-in, audio, and trailing silence are concatenated into one
-/// `SamplesBuffer` before appending. This keeps rodio's queue shape at one
-/// tracked source per synthesized sentence, avoiding source-boundary/drain
-/// regressions from enqueueing the lead-in, audio, and tail as separate sounds.
-///
-/// `first_append` is flipped on the first call after the player goes idle.
-/// The worker uses it in the idle branch of the main loop to distinguish
-/// "never queued anything since last drain" from "drained after speaking",
-/// which controls when `tts_active` is released and the lead-in re-armed.
-#[cfg(test)]
-fn build_sentence_append_buffer(
-    first_append: &mut bool,
-    audio: Vec<f32>,
-    silence_buf_len: usize,
-) -> Vec<f32> {
-    if *first_append {
-        *first_append = false;
-    }
-
-    let trailing_silence_len = silence_buf_len.saturating_sub(SENTENCE_LEAD_IN_SAMPLES);
-    let mut buf = Vec::with_capacity(SENTENCE_LEAD_IN_SAMPLES + audio.len() + trailing_silence_len);
-    buf.extend(std::iter::repeat_n(0.0_f32, SENTENCE_LEAD_IN_SAMPLES));
-    buf.extend(audio);
-    buf.extend(std::iter::repeat_n(0.0_f32, trailing_silence_len));
-    buf
-}
-
-/// Group sentences into synthesis chunks.
-///
-/// The first sentence always stands alone — it is what the listener hears
-/// first, and synthesizing it by itself keeps time-to-first-audio at the
-/// single-sentence cost. Subsequent sentences pack greedily: a sentence
-/// joins the current chunk while the combined length stays within
-/// `max_chars`; otherwise it starts a new chunk. A single sentence longer
-/// than `max_chars` becomes its own chunk unsplit — Pocket TTS handles long
-/// single sentences fine (the ceiling is the 500-LM-step default), it's the
-/// *seams* we're minimizing.
-///
-/// Sentences within a chunk are joined with a single space; sentence-ending
-/// punctuation is preserved by `split_sentences`, so the model sees natural
-/// multi-sentence prose — the same shape upstream's ~50-token chunker feeds it.
-#[cfg(test)]
-fn group_sentences_into_chunks(sentences: &[String], max_chars: usize) -> Vec<String> {
-    buzz_voice_pkg::preparation::group_sentences_into_chunks(sentences, max_chars)
 }
 
 // drain_until_shutdown lives in super (huddle/mod.rs) — shared with stt.rs.

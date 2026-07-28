@@ -758,4 +758,27 @@ mod tests {
         assert_eq!(shaped[879], 0.0);
         assert!(shaped[880..].iter().all(|sample| *sample == 0.0));
     }
+
+    #[test]
+    fn shaping_preserves_the_leading_audio_samples() {
+        let input: Vec<f32> = (0..FADE_OUT_SAMPLES * 4)
+            .map(|index| 0.5 + index as f32 * 1e-4)
+            .collect();
+        let shaped = shape_tts_chunk(input.clone());
+        assert_eq!(
+            &shaped[LEAD_IN_SAMPLES..LEAD_IN_SAMPLES + FADE_OUT_SAMPLES],
+            &input[..FADE_OUT_SAMPLES]
+        );
+    }
+
+    #[test]
+    fn shaping_short_and_empty_audio_remains_well_formed() {
+        let single = shape_tts_chunk(vec![0.5]);
+        assert_eq!(single[LEAD_IN_SAMPLES], 0.5);
+        assert_eq!(single.len(), LEAD_IN_SAMPLES + 1 + TRAILING_SILENCE_SAMPLES);
+
+        let empty = shape_tts_chunk(Vec::new());
+        assert_eq!(empty.len(), LEAD_IN_SAMPLES + TRAILING_SILENCE_SAMPLES);
+        assert!(empty.iter().all(|sample| *sample == 0.0));
+    }
 }

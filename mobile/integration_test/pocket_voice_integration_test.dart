@@ -88,9 +88,27 @@ void main() {
       warmClock.stop();
       _expectValidPcm(warm.data.materialize().asUint8List(), warm.sampleRate);
 
-      final cancelClock = Stopwatch()..start();
+      final queuedCancelClock = Stopwatch()..start();
       worker.synthesize(
         3,
+        List.filled(
+          20,
+          'This queued request must remain cancelled before synthesis begins.',
+        ).join(' '),
+      );
+      worker.cancel();
+      final queuedCancelled = await worker.responses
+          .where((response) => response is PocketWorkerFailure)
+          .cast<PocketWorkerFailure>()
+          .where((failure) => failure.generation == 3)
+          .first
+          .timeout(const Duration(seconds: 10));
+      queuedCancelClock.stop();
+      expect(queuedCancelled.kind, PocketWorkerFailureKind.cancelled);
+
+      final cancelClock = Stopwatch()..start();
+      worker.synthesize(
+        4,
         List.filled(
           20,
           'This deliberately long sentence gives cancellation time to interrupt.',
@@ -101,11 +119,11 @@ void main() {
       final cancelled = await worker.responses
           .where((response) => response is PocketWorkerFailure)
           .cast<PocketWorkerFailure>()
-          .where((failure) => failure.generation == 3)
+          .where((failure) => failure.generation == 4)
           .first
           .timeout(const Duration(seconds: 10));
       cancelClock.stop();
-      expect(cancelled.message, contains('cancelled'));
+      expect(cancelled.kind, PocketWorkerFailureKind.cancelled);
 
       // Emitted in a stable shape so simulator/device runs are easy to compare.
       debugPrint(
@@ -117,6 +135,7 @@ void main() {
         'rtf=${rtf.toStringAsFixed(3)} '
         'playback_ms=${playbackClock.elapsedMilliseconds} '
         'warm_pcm_ms=${warmClock.elapsedMilliseconds} '
+        'queued_cancel_ms=${queuedCancelClock.elapsedMilliseconds} '
         'cancel_ms=${cancelClock.elapsedMilliseconds} '
         'download_ms=${downloadTime?.inMilliseconds ?? 0} '
         'rss_bytes=${ProcessInfo.currentRss} '

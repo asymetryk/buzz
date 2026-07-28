@@ -115,15 +115,21 @@ class PocketVoiceWorker {
   }
 
   void synthesize(int generation, String text) {
-    if (_commands == null) {
+    final commands = _commands;
+    final handle = _handle;
+    final ffi = _mainFfi;
+    if (commands == null || handle == null || ffi == null) {
       throw StateError('Pocket worker is not ready.');
     }
     if (_activeSynthesis != null) {
       throw StateError('Pocket worker already has an active synthesis.');
     }
+    // Clear cancellation before publishing the command. Any cancel that
+    // arrives after this point belongs to this generation and must stay set.
+    ffi.resetCancel(handle);
     _activeGeneration = generation;
     _activeSynthesis = Completer<void>();
-    _commands!.send(_Synthesize(generation, text));
+    commands.send(_Synthesize(generation, text));
   }
 
   void cancel() {
@@ -197,7 +203,6 @@ void _workerMain((SendPort, String) startup) {
             output.send(PocketWorkerDone(command.generation));
             return;
           }
-          ffi.resetCancel(handle);
           for (var index = 0; index < chunks.length; index += 1) {
             final stopwatch = Stopwatch()..start();
             final pcm = ffi.synthesize(handle, chunks[index]);
