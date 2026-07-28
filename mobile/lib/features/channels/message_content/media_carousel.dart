@@ -99,7 +99,11 @@ class _MessageImageCarousel extends HookConsumerWidget {
         if (cancelled || !context.mounted) {
           return;
         }
-        for (final index in {currentIndex.value, currentIndex.value + 1}) {
+        for (
+          var index = currentIndex.value - 2;
+          index <= currentIndex.value + 2;
+          index++
+        ) {
           if (index < 0 || index >= items.length) {
             continue;
           }
@@ -108,7 +112,7 @@ class _MessageImageCarousel extends HookConsumerWidget {
             auth: mediaAuth,
             client: mediaClient,
           );
-          unawaited(precacheImage(provider, context).catchError((_) {}));
+          unawaited(precacheImage(provider, context, onError: (_, _) {}));
         }
       });
       return () => cancelled = true;
@@ -155,6 +159,11 @@ class _MessageImageCarousel extends HookConsumerWidget {
                     semanticLabel: items[index].semanticLabel,
                     previewDecodeWidth: previewDecodeWidths[index],
                     aspectRatio: items[index].aspectRatio,
+                    preloadProvider: MediaImageProvider(
+                      url: items[index].url,
+                      auth: mediaAuth,
+                      client: mediaClient,
+                    ),
                   ),
               ];
               final carousel = SizedBox(

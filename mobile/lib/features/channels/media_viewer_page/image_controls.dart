@@ -24,7 +24,7 @@ class _MediaViewerBottomControls extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: Grid.sm),
+      padding: const EdgeInsets.fromLTRB(Grid.sm, Grid.xxs, Grid.sm, 0),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
@@ -265,8 +265,21 @@ Size _imageViewerSize(Size viewport, double? aspectRatio) {
   return Size(viewport.width, viewport.width / safeAspectRatio);
 }
 
-bool _usesPortraitBottomCorners(double? aspectRatio) {
-  return aspectRatio != null && aspectRatio > 0 && aspectRatio < 1;
+void _precacheViewerImages(
+  BuildContext context,
+  List<MediaViewerImage> images,
+  int focusedIndex,
+) {
+  for (var index = focusedIndex - 2; index <= focusedIndex + 2; index++) {
+    if (index < 0 || index >= images.length) {
+      continue;
+    }
+    final provider = images[index].preloadProvider;
+    if (provider == null) {
+      continue;
+    }
+    unawaited(precacheImage(provider, context, onError: (_, _) {}));
+  }
 }
 
 bool _hasImageTransform(Matrix4 transform) {

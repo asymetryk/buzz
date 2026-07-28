@@ -41,6 +41,9 @@ class MediaViewerImage {
   /// The image's intrinsic width-to-height ratio, when provided by metadata.
   final double? aspectRatio;
 
+  /// A full-resolution provider that can be warmed before this page is shown.
+  final ImageProvider<Object>? preloadProvider;
+
   /// Creates a media-viewer image.
   const MediaViewerImage({
     required this.url,
@@ -48,6 +51,7 @@ class MediaViewerImage {
     this.semanticLabel,
     this.previewDecodeWidth,
     this.aspectRatio,
+    this.preloadProvider,
   });
 }
 
@@ -336,6 +340,7 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
     } else {
       nextRouteAnimation.addStatusListener(_handleRouteAnimationStatus);
     }
+    _precacheViewerImages(context, _images, _currentIndex);
   }
 
   void _handleRouteAnimationStatus(AnimationStatus status) {
@@ -406,6 +411,7 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
   }
 
   void _onPageChanged(int index) {
+    _precacheViewerImages(context, _images, index);
     setState(() {
       _currentIndex = index;
       _isTransformed = _hasImageTransform(
@@ -597,7 +603,7 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
                       return Padding(
                         padding: EdgeInsets.only(
                           top: viewPadding.top + 48 + Grid.xxs,
-                          bottom: viewPadding.bottom + 56 + Grid.xxs,
+                          bottom: viewPadding.bottom + 56 + (Grid.xxs * 2),
                         ),
                         child: LayoutBuilder(
                           builder: (context, constraints) {
@@ -605,13 +611,6 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
                               Size(constraints.maxWidth, constraints.maxHeight),
                               image.aspectRatio,
                             );
-                            final borderRadius =
-                                _usesPortraitBottomCorners(image.aspectRatio)
-                                ? const BorderRadius.only(
-                                    bottomLeft: Radius.circular(Radii.dialog),
-                                    bottomRight: Radius.circular(Radii.dialog),
-                                  )
-                                : BorderRadius.zero;
                             return InteractiveViewer(
                               transformationController:
                                   _transformationControllers[index],
@@ -642,22 +641,19 @@ class _MediaImageViewerPageState extends State<MediaImageViewerPage>
                                         index == _initialIndex,
                                     child: MediaViewerHero(
                                       tag: image.heroTag,
-                                      child: ClipRRect(
-                                        borderRadius: borderRadius,
-                                        child: MediaImage(
-                                          url: image.url,
-                                          decodeWidth: _useFullResolution
-                                              ? null
-                                              : image.previewDecodeWidth,
-                                          boundDecodeToLayout: false,
-                                          fit: BoxFit.contain,
-                                          semanticLabel: image.semanticLabel,
-                                          errorBuilder: (_, _, _) =>
-                                              const _MediaLoadFailure(
-                                                message: 'Failed to load image',
-                                                icon: LucideIcons.imageOff,
-                                              ),
-                                        ),
+                                      child: MediaImage(
+                                        url: image.url,
+                                        decodeWidth: _useFullResolution
+                                            ? null
+                                            : image.previewDecodeWidth,
+                                        boundDecodeToLayout: false,
+                                        fit: BoxFit.contain,
+                                        semanticLabel: image.semanticLabel,
+                                        errorBuilder: (_, _, _) =>
+                                            const _MediaLoadFailure(
+                                              message: 'Failed to load image',
+                                              icon: LucideIcons.imageOff,
+                                            ),
                                       ),
                                     ),
                                   ),

@@ -484,10 +484,15 @@ Photos
             findsOneWidget,
           );
           expect(
-            find.byKey(const ValueKey('message-media-image-viewer-position')),
+            find.byKey(const ValueKey('message-media-image-viewer-filmstrip')),
             findsOneWidget,
           );
-          expect(find.text('2 / 3'), findsOneWidget);
+          expect(
+            find.byKey(
+              const ValueKey('message-media-image-viewer-thumbnail:1'),
+            ),
+            findsOneWidget,
+          );
 
           await tester.fling(
             find.byKey(const ValueKey('message-media-image-viewer-pages')),
@@ -496,7 +501,15 @@ Photos
           );
           await tester.pumpAndSettle();
 
-          expect(find.text('3 / 3'), findsOneWidget);
+          final thirdThumbnail = find.byKey(
+            const ValueKey('message-media-image-viewer-thumbnail:2'),
+          );
+          final thirdSemantics = tester.widget<Semantics>(
+            find
+                .ancestor(of: thirdThumbnail, matching: find.byType(Semantics))
+                .first,
+          );
+          expect(thirdSemantics.properties.selected, isTrue);
         },
       );
 
