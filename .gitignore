@@ -2,6 +2,7 @@
 /target/
 /dist/
 /admin-web/dist/
+/mobile/.generated/voice/
 
 # lefthook-generated hook scripts (machine-specific)
 .hooks/

@@ -1,6 +1,7 @@
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../../shared/relay/relay.dart';
+import '../../shared/voice/pocket_voice_controller.dart';
 import '../channels/channel_management_provider.dart';
 import '../profile/user_cache_provider.dart';
 import '../profile/user_profile.dart';
@@ -15,6 +16,7 @@ class SendMessage {
   final void Function(String channelId, NostrEvent event) _addLocalMessage;
   final void Function(String channelId, String eventId) _completeLocalMessage;
   final void Function(String channelId, String eventId) _removeLocalMessage;
+  final Future<void> Function()? _onBeforeSend;
 
   SendMessage({
     required SignedEventRelay signedEventRelay,
@@ -25,12 +27,14 @@ class SendMessage {
     required void Function(String channelId, String eventId)
     completeLocalMessage,
     required void Function(String channelId, String eventId) removeLocalMessage,
+    Future<void> Function()? onBeforeSend,
   }) : _signedEventRelay = signedEventRelay,
        _fetchMembers = fetchMembers,
        _readUserCache = readUserCache,
        _addLocalMessage = addLocalMessage,
        _completeLocalMessage = completeLocalMessage,
-       _removeLocalMessage = removeLocalMessage;
+       _removeLocalMessage = removeLocalMessage,
+       _onBeforeSend = onBeforeSend;
 
   /// Send a text message to a channel.
   ///
@@ -47,6 +51,7 @@ class SendMessage {
     List<String>? mentionPubkeys,
     List<List<String>> mediaTags = const [],
   }) async {
+    await _onBeforeSend?.call();
     // Use explicitly passed pubkeys, or resolve @mentions against
     // channel members to avoid matching the wrong user.
     final resolvedMentions =
@@ -179,5 +184,10 @@ final sendMessageProvider = Provider<SendMessage>((ref) {
     removeLocalMessage: (channelId, eventId) => ref
         .read(channelMessagesProvider(channelId).notifier)
         .removeLocalMessage(eventId),
+    onBeforeSend: () async {
+      if (ref.read(pocketVoiceProvider).enabled) {
+        await ref.read(pocketVoiceProvider.notifier).interrupt();
+      }
+    },
   );
 });

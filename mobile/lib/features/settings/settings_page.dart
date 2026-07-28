@@ -9,6 +9,8 @@ import '../../shared/auth/auth.dart';
 import '../../shared/clipboard_utils.dart';
 import '../../shared/relay/relay.dart';
 import '../../shared/theme/theme.dart';
+import '../../shared/voice/pocket_model_manifest.dart';
+import '../../shared/voice/pocket_model_provider.dart';
 import '../../shared/widgets/app_list.dart';
 import '../../shared/widgets/app_list_card.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
@@ -18,6 +20,7 @@ import 'theme_picker_page.dart';
 
 part 'settings_page/appearance_section.dart';
 part 'settings_page/connection_section.dart';
+part 'settings_page/voice_section.dart';
 
 class SettingsPage extends HookConsumerWidget {
   const SettingsPage({super.key, required this.profileHeader});
@@ -42,6 +45,7 @@ class SettingsPage extends HookConsumerWidget {
               children: [
                 profileHeader,
                 const _AppearanceSection(),
+                const _VoiceSection(),
                 const _ConnectionSection(),
                 const _RemoveCommunitySection(),
               ],

@@ -94,6 +94,8 @@ android {
         resValue("string", "app_name", "Buzz")
     }
 
+    sourceSets["main"].jniLibs.srcDir("../../.generated/voice/android/jniLibs")
+
     signingConfigs {
         if (hasUploadSigning) {
             create("upload") {
@@ -122,6 +124,20 @@ android {
             }
         }
     }
+}
+
+val buildBuzzVoiceNative by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile.parentFile)
+    environment("ANDROID_NDK_HOME", android.ndkDirectory.absolutePath)
+    commandLine(
+        "/bin/bash",
+        "-c",
+        ". ./bin/activate-hermit && ./scripts/mobile-voice-native.sh build-android",
+    )
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildBuzzVoiceNative)
 }
 
 dependencies {

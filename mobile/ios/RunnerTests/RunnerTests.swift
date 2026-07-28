@@ -1,10 +1,71 @@
 import Flutter
+import Darwin
+import AVFoundation
 import UIKit
 import XCTest
 
 @testable import Buzz
 
 class RunnerTests: XCTestCase {
+
+  func testPocketVoiceUsesSpokenPlaybackAudioSession() throws {
+    let session = AVAudioSession.sharedInstance()
+    try VoiceAudioOutput.configureAudioSession(session)
+    XCTAssertEqual(session.category, .playback)
+    XCTAssertEqual(session.mode, .spokenAudio)
+    XCTAssertTrue(session.categoryOptions.contains(.duckOthers))
+  }
+
+  func testPocketVoiceProducesValidPcmWhenModelIsAvailable() throws {
+    let modelPath =
+      ProcessInfo.processInfo.environment["BUZZ_POCKET_MODEL_DIR"]
+      ?? UserDefaults.standard.string(forKey: "BuzzPocketModelTestPath")
+    guard let modelPath, FileManager.default.fileExists(atPath: modelPath) else {
+      throw XCTSkip("Set BUZZ_POCKET_MODEL_DIR to run the Pocket TTS integration test.")
+    }
+
+    let loadStart = ContinuousClock.now
+    let engineResult = modelPath.withCString(buzz_voice_engine_create)
+    let loadTime = loadStart.duration(to: .now)
+    if let error = engineResult.error {
+      defer { buzz_voice_string_free(error) }
+      XCTFail(String(cString: error))
+      return
+    }
+    let engine = try XCTUnwrap(engineResult.engine)
+    defer { buzz_voice_engine_destroy(engine) }
+
+    let prompt = "Pocket voice is running on this iOS simulator."
+    let firstStart = ContinuousClock.now
+    let first = prompt.withCString { buzz_voice_engine_synthesize(engine, $0) }
+    let firstTime = firstStart.duration(to: .now)
+    let firstData = try validatedPcmData(first)
+    buzz_voice_pcm_free(first)
+
+    let warmStart = ContinuousClock.now
+    let warm = prompt.withCString { buzz_voice_engine_synthesize(engine, $0) }
+    let warmTime = warmStart.duration(to: .now)
+    let warmData = try validatedPcmData(warm)
+    buzz_voice_pcm_free(warm)
+
+    var usage = rusage()
+    getrusage(RUSAGE_SELF, &usage)
+    let audioSeconds = Double(firstData.count) / 2 / 24_000
+    let firstSeconds = durationSeconds(firstTime)
+    let metrics =
+      "BUZZ_POCKET_METRICS "
+        + "load_s=\(durationSeconds(loadTime)) "
+        + "first_pcm_s=\(firstSeconds) "
+        + "audio_s=\(audioSeconds) "
+        + "rtf=\(firstSeconds / audioSeconds) "
+        + "warm_pcm_s=\(durationSeconds(warmTime)) "
+        + "peak_rss_bytes=\(usage.ru_maxrss) "
+        + "repeat_pcm_equal=\(firstData == warmData)"
+    let attachment = XCTAttachment(string: metrics)
+    attachment.name = metrics
+    attachment.lifetime = .keepAlways
+    add(attachment)
+  }
 
   func testDynamicIslandQrScannerRecognizesTallSafeAreas() {
     for safeAreaTopInset in [51, 59, 62] {
@@ -225,6 +286,27 @@ class RunnerTests: XCTestCase {
     let url = try XCTUnwrap(
       Bundle(for: RunnerTests.self).url(forResource: name, withExtension: fileExtension))
     return try Data(contentsOf: url)
+  }
+
+  private func validatedPcmData(_ pcm: BuzzVoicePcm) throws -> Data {
+    if let error = pcm.error {
+      defer { buzz_voice_string_free(error) }
+      XCTFail(String(cString: error))
+      return Data()
+    }
+    XCTAssertEqual(pcm.sample_rate, 24_000)
+    XCTAssertGreaterThan(pcm.len, 2_400)
+    let samples = try XCTUnwrap(pcm.samples)
+    let buffer = UnsafeBufferPointer(start: samples, count: pcm.len)
+    XCTAssertTrue(buffer.contains { $0 != 0 })
+    XCTAssertGreaterThan(buffer.map { abs(Int32($0)) }.max() ?? 0, 100)
+    return Data(bytes: samples, count: pcm.len * MemoryLayout<Int16>.size)
+  }
+
+  private func durationSeconds(_ duration: Duration) -> Double {
+    let components = duration.components
+    return Double(components.seconds)
+      + Double(components.attoseconds) / 1_000_000_000_000_000_000
   }
 }
 

@@ -7,6 +7,7 @@ import UserNotifications
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var mediaUploadChannel: FlutterMethodChannel?
   private var qrScannerChannel: FlutterMethodChannel?
+  private var voiceAudioOutput: VoiceAudioOutput?
 
   override func application(
     _ application: UIApplication,
@@ -32,6 +33,9 @@ import UserNotifications
     qrScannerChannel?.setMethodCallHandler { call, result in
       Self.handleQrScannerMethodCall(call, result: result)
     }
+    voiceAudioOutput = VoiceAudioOutput(
+      messenger: engineBridge.applicationRegistrar.messenger()
+    )
   }
 
   private static func handleQrScannerMethodCall(

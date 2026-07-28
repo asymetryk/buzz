@@ -13,6 +13,7 @@ import '../../shared/widgets/avatar_image.dart';
 import '../../shared/widgets/frosted_app_bar.dart';
 import '../../shared/widgets/frosted_scaffold.dart';
 import '../../shared/widgets/skeleton.dart';
+import '../../shared/voice/pocket_voice_controller.dart';
 import '../profile/presence_cache_provider.dart';
 import '../profile/profile_provider.dart';
 import '../profile/user_cache_provider.dart';
@@ -35,6 +36,8 @@ import 'members_sheet.dart';
 import 'message_actions.dart';
 import 'message_content.dart';
 import 'mentions/mention_candidates_provider.dart';
+import 'pocket_voice_button.dart';
+import 'pocket_voice_conversation.dart';
 import 'read_state/deferred_read_state_update.dart';
 import 'read_state/read_state_provider.dart';
 import 'read_state/read_state_time.dart';
@@ -123,12 +126,31 @@ class ChannelDetailPage extends HookConsumerWidget {
     final detailsAsync = ref.watch(channelDetailsProvider(channel.id));
     final channelsAsync = ref.watch(channelsProvider);
     final messagesState = ref.watch(channelMessagesProvider(channel.id));
+    final membersState = ref.watch(channelMembersProvider(channel.id));
+    final voiceConversation = useMemoized(PocketVoiceConversation.new);
     final sessionStatus = ref.watch(relaySessionProvider).status;
     final readState = ref.watch(readStateProvider);
     final currentPubkey = ref
         .watch(profileProvider)
         .whenData((value) => value?.pubkey)
         .value;
+    final voiceEventKey =
+        messagesState.value?.map((event) => event.id).join(',') ?? '';
+    useEffect(() {
+      final events = messagesState.value;
+      if (events == null) return null;
+      final spoken = voiceConversation.update(
+        events: events,
+        members: membersState.value,
+        currentPubkey: currentPubkey,
+      );
+      for (final event in spoken) {
+        ref
+            .read(pocketVoiceProvider.notifier)
+            .speak('channel:${channel.id}', event.content);
+      }
+      return null;
+    }, [voiceEventKey, membersState.value, currentPubkey, channel.id]);
     // Only show channel-level typing (exclude thread-scoped entries and self).
     final typingEntries = ref
         .watch(channelTypingProvider(channel.id))
@@ -254,6 +276,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                 ],
               ),
         actions: [
+          PocketVoiceButton(conversationKey: 'channel:${channel.id}'),
           _MembersButton(
             channelId: resolvedChannel.id,
             channel: resolvedChannel,

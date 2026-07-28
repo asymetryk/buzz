@@ -1,0 +1,19 @@
+[package]
+name = "buzz-voice-mobile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Minimal mobile C ABI for Buzz Pocket TTS"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+default = ["static"]
+static = ["buzz-voice/static"]
+shared = ["buzz-voice/shared"]
+
+[dependencies]
+buzz-voice = { path = "../buzz-voice", default-features = false }

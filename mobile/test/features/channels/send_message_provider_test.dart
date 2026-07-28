@@ -66,6 +66,30 @@ void main() {
     expect(completedIds, isEmpty);
     expect(removedIds, [localMessages.single.id]);
   });
+
+  test('interrupts voice before publishing submitted user text', () async {
+    final session = _PendingPublishRelaySession();
+    var interrupted = false;
+    final send = SendMessage(
+      signedEventRelay: SignedEventRelay(
+        session: session,
+        nsec: nostr.Keys.generate().nsec,
+      ),
+      fetchMembers: (_) async => const [],
+      readUserCache: () => const {},
+      addLocalMessage: (_, _) {
+        expect(interrupted, isTrue);
+      },
+      completeLocalMessage: (_, _) {},
+      removeLocalMessage: (_, _) {},
+      onBeforeSend: () async => interrupted = true,
+    );
+
+    final result = send(channelId: _channelId, content: 'steer');
+    await session.published;
+    session.accept();
+    await result;
+  });
 }
 
 const _channelId = '11111111-1111-4111-8111-111111111111';

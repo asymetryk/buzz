@@ -19,3 +19,4 @@ APP_DISPLAY_NAME = Buzz
 // device signing beats the worktree default while unset variables still
 // fall through to the worktree values.
 #include? "AppOverrides.xcconfig"
+#include "Voice.xcconfig"

@@ -78,6 +78,7 @@ internal object AndroidImageProcessor {
 
 class MainActivity : FlutterActivity() {
     private var mediaUploadChannel: MethodChannel? = null
+    private var voiceAudioOutput: VoiceAudioOutput? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -101,6 +102,21 @@ class MainActivity : FlutterActivity() {
                 }
             }
         }
+        voiceAudioOutput = VoiceAudioOutput(
+            applicationContext,
+            flutterEngine.dartExecutor.binaryMessenger,
+        )
+    }
+
+    override fun onStop() {
+        voiceAudioOutput?.background()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        voiceAudioOutput?.dispose()
+        voiceAudioOutput = null
+        super.onDestroy()
     }
 
     private fun handleSanitizeImageForUpload(

@@ -9,3 +9,4 @@ APP_DISPLAY_NAME = Buzz
 CODE_SIGN_STYLE = Automatic
 CODE_SIGN_IDENTITY = iPhone Developer
 #include? "AppOverrides.xcconfig"
+#include "Voice.xcconfig"

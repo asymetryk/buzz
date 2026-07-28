@@ -1303,6 +1303,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "buzz-voice-mobile"
+version = "0.1.0"
+dependencies = [
+ "buzz-voice",
+]
+
+[[package]]
 name = "buzz-workflow"
 version = "0.1.0"
 dependencies = [
