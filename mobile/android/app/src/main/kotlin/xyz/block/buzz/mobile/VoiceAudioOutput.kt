@@ -213,10 +213,16 @@ internal class VoiceAudioOutput(
         try {
             candidate =
                 TextToSpeech(applicationContext) { status ->
-                    val engine = candidate
                     mainHandler.post {
-                        if (epoch != ttsInitializationEpoch || engine == null) {
+                        val engine = candidate
+                        if (epoch != ttsInitializationEpoch) {
                             engine?.shutdown()
+                            return@post
+                        }
+                        if (engine == null) {
+                            finishTtsInitializationFailure(
+                                "Default text-to-speech engine failed.",
+                            )
                             return@post
                         }
                         val languageStatus =

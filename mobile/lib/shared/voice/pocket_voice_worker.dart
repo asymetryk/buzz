@@ -83,6 +83,7 @@ class PocketVoiceWorker {
 
   Stream<PocketWorkerResponse> get responses => _responses.stream;
   bool get isReady => _commands != null;
+  bool get isSynthesizing => _activeSynthesis != null;
 
   Future<void> start(String modelPath) async {
     if (_isolate != null) return;

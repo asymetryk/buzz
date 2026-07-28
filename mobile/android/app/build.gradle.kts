@@ -149,6 +149,7 @@ dependencies {
     testImplementation(kotlin("test"))
 
     androidTestImplementation(kotlin("test"))
+    // Flutter integration_test pins runner 1.2.0 in its runtime classpath.
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test:runner:1.2.0")
 }

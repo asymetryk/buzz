@@ -201,6 +201,33 @@ void main() {
     );
   });
 
+  test(
+    'splits long Android system speech without changing its order',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output, modelReady: false);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+      final first = List.filled(450, 'first').join(' ');
+      final second = List.filled(450, 'second').join(' ');
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', '$first $second');
+      await _flush();
+
+      expect(output.systemSpoken.single.$1.length, lessThanOrEqualTo(4000));
+      output.complete();
+      await _flush();
+      expect(output.systemSpoken, hasLength(2));
+      expect(output.systemSpoken.last.$1.length, lessThanOrEqualTo(4000));
+      expect(
+        output.systemSpoken.map((speech) => speech.$1).join(' '),
+        '$first $second',
+      );
+    },
+  );
+
   test('falls back without error chatter when Pocket loading fails', () async {
     final worker = _FakeWorker()..startError = StateError('load failed');
     final output = _FakeAudioOutput();
@@ -233,6 +260,11 @@ void main() {
         notifier.enable('conversation'),
         throwsA(isA<StateError>()),
       );
+      final state = container.read(pocketVoiceProvider);
+      expect(state.enabled, isFalse);
+      expect(state.phase, PocketVoicePhase.off);
+      expect(state.conversationKey, isNull);
+      expect(state.error, isNotNull);
     },
   );
 
@@ -387,6 +419,38 @@ void main() {
     await _flush();
     expect(recoveredWorker.syntheses.single.$2, 'Recovered.');
   });
+
+  test(
+    'resource pressure parks Pocket while final audio is draining',
+    () async {
+      final worker = _FakeWorker();
+      final output = _FakeAudioOutput();
+      final container = _container(worker, output);
+      addTearDown(container.dispose);
+      final notifier = container.read(pocketVoiceProvider.notifier);
+
+      await notifier.enable('conversation');
+      notifier.speak('conversation', 'Already synthesized.');
+      await _flush();
+      worker.emitAudio(1, [1, 2], isLast: true);
+      await _flush();
+      expect(worker.isSynthesizing, isFalse);
+
+      output.resourcePressure();
+      await _flush();
+
+      expect(worker.disposeCount, 1);
+      expect(
+        container.read(pocketVoiceProvider).fallbackReason,
+        PocketVoiceFallbackReason.resourcePressure,
+      );
+      output.complete();
+      await _flush();
+      notifier.speak('conversation', 'Now use system speech.');
+      await _flush();
+      expect(output.systemSpoken.single.$1, 'Now use system speech.');
+    },
+  );
 }
 
 ProviderContainer _container(
@@ -449,6 +513,7 @@ class _FakeWorker extends PocketVoiceWorker {
   final List<(int, String)> syntheses = [];
   Completer<void>? _cancelGate;
   bool _ready = false;
+  bool _synthesizing = false;
   int startCount = 0;
   int disposeCount = 0;
   int cancelCount = 0;
@@ -464,6 +529,9 @@ class _FakeWorker extends PocketVoiceWorker {
   bool get isReady => _ready;
 
   @override
+  bool get isSynthesizing => _synthesizing;
+
+  @override
   Future<void> start(String modelPath) async {
     startCount += 1;
     await _startGate?.future;
@@ -476,10 +544,12 @@ class _FakeWorker extends PocketVoiceWorker {
 
   @override
   void synthesize(int generation, String text) {
+    _synthesizing = true;
     syntheses.add((generation, text));
   }
 
   void emitAudio(int generation, List<int> bytes, {required bool isLast}) {
+    if (isLast) _synthesizing = false;
     _controller.add(
       PocketWorkerAudio(
         generation: generation,
@@ -495,6 +565,7 @@ class _FakeWorker extends PocketVoiceWorker {
     int generation, {
     List<String> remainingTextChunks = const [],
   }) {
+    _synthesizing = false;
     _controller.add(
       PocketWorkerFailure(
         PocketWorkerFailureKind.synthesis,

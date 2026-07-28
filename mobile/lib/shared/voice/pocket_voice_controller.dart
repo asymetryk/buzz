@@ -63,6 +63,40 @@ class _SpeechRequest {
   const _SpeechRequest(this.text, {this.systemOnly = false});
 }
 
+const _androidSystemTtsMaxInputLength = 4000;
+
+List<String> _splitSystemTtsText(String text) {
+  if (text.length <= _androidSystemTtsMaxInputLength) return [text];
+  final chunks = <String>[];
+  var offset = 0;
+  while (text.length - offset > _androidSystemTtsMaxInputLength) {
+    var length = _androidSystemTtsMaxInputLength;
+    while (length > 0 && !_isWhitespace(text.codeUnitAt(offset + length - 1))) {
+      length -= 1;
+    }
+    if (length == 0) length = _androidSystemTtsMaxInputLength;
+    if (_isHighSurrogate(text.codeUnitAt(offset + length - 1))) {
+      length -= 1;
+    }
+    chunks.add(text.substring(offset, offset + length).trim());
+    offset += length;
+    while (offset < text.length && _isWhitespace(text.codeUnitAt(offset))) {
+      offset += 1;
+    }
+  }
+  final remainder = text.substring(offset).trim();
+  if (remainder.isNotEmpty) chunks.add(remainder);
+  return chunks;
+}
+
+bool _isWhitespace(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+bool _isHighSurrogate(int codeUnit) => codeUnit >= 0xD800 && codeUnit <= 0xDBFF;
+
 class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
   final Queue<_SpeechRequest> _utterances = Queue();
   final Queue<PocketWorkerAudio> _audio = Queue();
@@ -162,8 +196,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
         : 'Download Pocket voice before starting a conversation.';
     if (epoch == _transitionEpoch) {
       state = PocketVoiceState(
-        phase: PocketVoicePhase.error,
-        conversationKey: conversationKey,
+        phase: PocketVoicePhase.off,
         failureKind: PocketVoiceFailureKind.load,
         error: message,
       );
@@ -307,7 +340,7 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
     }
     if (_stopping || !state.enabled || _activeGeneration != null) return;
 
-    final request = _utterances.removeFirst();
+    var request = _utterances.removeFirst();
     final generation = ++_nextGeneration;
     _activeGeneration = generation;
     _activeRequest = request;
@@ -340,6 +373,14 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
       return;
     }
 
+    final systemChunks = _splitSystemTtsText(request.text);
+    if (systemChunks.length > 1) {
+      for (final chunk in systemChunks.skip(1).toList().reversed) {
+        _utterances.addFirst(_SpeechRequest(chunk, systemOnly: true));
+      }
+      request = _SpeechRequest(systemChunks.first, systemOnly: true);
+      _activeRequest = request;
+    }
     _activeBackend = PocketVoiceBackend.androidSystem;
     state = PocketVoiceState(
       phase: PocketVoicePhase.synthesizing,
@@ -544,13 +585,17 @@ class PocketVoiceNotifier extends Notifier<PocketVoiceState> {
     _pocketRetryAllowed = false;
     if (_activeBackend == PocketVoiceBackend.pocket &&
         _activeGeneration != null) {
-      _worker?.cancel();
       state = PocketVoiceState(
         phase: state.phase,
         backend: state.backend,
         fallbackReason: PocketVoiceFallbackReason.resourcePressure,
         conversationKey: state.conversationKey,
       );
+      if (_worker?.isSynthesizing ?? false) {
+        _worker?.cancel();
+      } else {
+        await _parkWorker();
+      }
       return;
     }
     await _parkWorker();
