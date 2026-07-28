@@ -1,14 +1,11 @@
 //! Pocket TTS engine wrapper around sherpa-onnx's `OfflineTts`.
 //!
 //! Pocket TTS is a small (~473 MB fp32 ONNX) zero-shot voice-cloning TTS
-//! model from Kyutai. It runs quickly on CPU via sherpa-onnx, replacing the
-//! previous Kokoro-82M engine that also required an espeak-free but
-//! lexicon-heavy G2P pipeline (Misaki + CMUdict).
+//! model from Kyutai that runs quickly on CPU via sherpa-onnx.
 //!
-//! Full-precision fp32 sessions, not the ~189 MB int8 quantization we
-//! originally shipped: a direct same-runtime A/B (k2-fsa/sherpa-onnx#3172)
-//! found the int8 ONNX export audibly degraded output quality, and fp32
-//! "significantly improved quality even at 1 step".
+//! Buzz uses full-precision fp32 sessions because a direct same-runtime A/B
+//! (k2-fsa/sherpa-onnx#3172) found the ~189 MB int8 ONNX export audibly
+//! degraded output quality.
 //!
 //! ## Attribution
 //!
@@ -94,12 +91,9 @@ const SYNTH_NUM_STEPS: i32 = 1;
 ///
 /// sherpa-onnx's `ScaleSilence` (`offline-tts.cc`) is *not* pre/post padding
 /// control: it finds every interior silence run ≥ 0.2 s (|s| ≤ 0.01) and
-/// multiplies its length by this factor. The previous value of 0.0 — set
-/// under the mistaken belief it disabled lead-in/lead-out padding — deleted
-/// every natural pause inside an utterance: clause breaks, breaths, the gap
-/// after a comma. Words slammed together and endings cut abruptly. The
-/// reference Pocket TTS pipeline does not post-process silence at all;
-/// 1.0 restores parity.
+/// multiplies its length by this factor. The reference Pocket TTS pipeline
+/// preserves natural clause breaks, breaths, and punctuation pauses, so the
+/// identity scale keeps those interior silences intact.
 const SYNTH_SILENCE_SCALE: f32 = 1.0;
 
 /// sherpa-onnx upstream default for `max_frames` (LM steps), in
@@ -120,10 +114,9 @@ const SHORT_PROMPT_MAX_FRAMES: i32 = 100;
 /// Word-count threshold (inclusive) below which we pad the prompt with
 /// leading spaces and cap `max_frames` tighter than the upstream default.
 /// Matches upstream `pocket_tts.models.tts_model.prepare_text_prompt`. Above
-/// this threshold we leave sherpa-onnx's own defaults in place — overriding
-/// them caused the "first 'yep' is just static" regression seen on
-/// 2026-05-18, where dropping `frames_after_eos` below the upstream default
-/// of 3 clipped the leading audio of multi-clause sentences.
+/// this threshold we leave sherpa-onnx's own defaults in place because
+/// dropping `frames_after_eos` below the upstream default of 3 can clip the
+/// leading audio of multi-clause sentences.
 const SHORT_PROMPT_WORD_THRESHOLD: usize = 4;
 
 /// Number of leading spaces prepended to short prompts. The upstream Python
@@ -132,21 +125,14 @@ const SHORT_PROMPT_WORD_THRESHOLD: usize = 4;
 /// This is upstream's *only* mitigation for the FlowLM cold-start smear on
 /// short utterances (kyutai-labs/pocket-tts #91, #70): the autoregressive
 /// generation has a 2–3 step "settle" period where the first phoneme can be
-/// smeared. A previous revision added a sacrificial `". . "` prefix plus an
-/// amplitude-threshold trim to strip the rendered prefix from the output —
-/// but the trim's absolute threshold (0.02 against raw peaks of ~0.076) sat
-/// in soft-onset territory and could eat real word starts, and its tuning
-/// was calibrated against `silence_scale = 0.0` audio. Deleted in favour of
-/// upstream parity: accept the occasional smeared first syllable rather
-/// than risk trimming real speech.
+/// smeared. The pad must remain whitespace-only: synthesized sacrificial text
+/// requires amplitude-threshold trimming, which can eat soft word starts.
 const SHORT_PROMPT_PAD_SPACES: usize = 8;
 
 /// sherpa-onnx's documented `frames_after_eos` default. We deliberately do
-/// *not* override this knob — the previous attempt to bump it for short
-/// inputs and lower it for long inputs lowered it below the upstream default
-/// of 3, which clipped the leading audio of multi-clause sentences (the
-/// "first 'yep' is static" regression). The constant exists only for the
-/// regression test below. Source: `offline-tts-pocket-impl.h:Generate`.
+/// *not* override this knob because values below the upstream default of 3 can
+/// clip the leading audio of multi-clause sentences. The constant exists only
+/// for the invariant test below. Source: `offline-tts-pocket-impl.h:Generate`.
 #[cfg(test)]
 const SHERPA_ONNX_FRAMES_AFTER_EOS_DEFAULT: i32 = 3;
 
@@ -367,12 +353,9 @@ pub(crate) fn prepare_pocket_prompt(input: &str) -> Option<PreparedPrompt> {
 
 /// Build the `GenerationConfig.extra` HashMap from a [`PreparedPrompt`].
 ///
-/// Centralised so the regression test below can assert that we **never**
-/// emit a `frames_after_eos` override — the previous attempt to override
-/// that knob (setting it to 1 for ≥5-word inputs) clipped the leading
-/// audio of multi-clause sentences (the "first 'yep' is static" bug on
-/// 2026-05-18). The upstream sherpa-onnx default of 3 is what we want, and
-/// the right way to keep it is to not set it at all.
+/// Centralised so the invariant test below can assert that we **never** emit a
+/// `frames_after_eos` override. Leaving the key unset preserves sherpa-onnx's
+/// upstream default of 3.
 fn build_generation_extra(prepared: &PreparedPrompt) -> Option<HashMap<String, serde_json::Value>> {
     prepared.max_frames.map(|mf| {
         let mut h: HashMap<String, serde_json::Value> = HashMap::with_capacity(1);
@@ -567,17 +550,9 @@ mod tests {
 
     // ── build_generation_extra ───────────────────────────────────────────────
     //
-    // These tests pin down a behaviour we've now regressed twice on:
-    //   1) Not padding/punctuating short inputs → 40 s of "monster breathing"
-    //      (pre-773a2a1).
-    //   2) Setting `frames_after_eos = 1` on long inputs → clipped leading
-    //      audio of multi-clause sentences, e.g. "Yep, I can hear you. …"
-    //      came out as a static burst (the 773a2a1 regression Tyler hit on
-    //      2026-05-18 ~14:30 UTC).
-    //
-    // The contract we enforce going forward: we **only** override
-    // `max_frames`, and only for ≤4-word inputs. Every other knob is left
-    // at sherpa-onnx's documented default (notably `frames_after_eos = 3`).
+    // Short prompts override only `max_frames`; long prompts emit no extras.
+    // Every other knob remains at sherpa-onnx's documented default, notably
+    // `frames_after_eos = 3`.
 
     #[test]
     fn build_extra_short_prompt_sets_only_max_frames() {
@@ -597,9 +572,7 @@ mod tests {
 
     #[test]
     fn build_extra_long_prompt_is_none() {
-        // ≥5 words: no extras at all. This is the key fix for the "first
-        // 'yep' in 'Yep, I can hear you. …' is static" regression — we
-        // were previously forcing `frames_after_eos = 1` on this path.
+        // ≥5 words: no extras, so the upstream LM defaults remain authoritative.
         let prepared = prepare_pocket_prompt("Yep, I can hear you.").expect("non-empty");
         assert_eq!(
             build_generation_extra(&prepared),
