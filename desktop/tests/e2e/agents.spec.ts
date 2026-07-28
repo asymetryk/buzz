@@ -880,49 +880,80 @@ test("custom personas share with people and keep export separate", async ({
   ).toHaveCount(0);
   await expect(shareDialog.getByText("Owner", { exact: true })).toHaveCount(0);
   await expect(shareDialog.getByText("(You)", { exact: true })).toHaveCount(0);
-  const copyLinkFooter = page.getByTestId("persona-share-copy-link-footer");
+  const linkRow = page.getByTestId("persona-share-link-row");
   await expect(
-    copyLinkFooter.getByRole("heading", { name: "Share with a link" }),
+    linkRow.getByRole("heading", { name: "Share with a link" }),
   ).toBeVisible();
   await expect(
-    copyLinkFooter.getByText("Anyone with the link can add and use a copy."),
+    linkRow.getByText("Anyone with the link can add and use a copy."),
   ).toHaveClass(/text-xs.*text-secondary-foreground\/75/);
   await expect(page.getByTestId("persona-share-send")).toHaveCount(0);
   const copyLinkButton = page.getByTestId("persona-share-copy-link");
-  const linkRow = page.getByTestId("persona-share-link-row");
   const linkIcon = page.getByTestId("persona-share-link-icon");
   const linkCopy = page.getByTestId("persona-share-link-copy");
-  const linkDivider = page.getByTestId("persona-share-link-divider");
   const catalogSection = page.getByTestId("persona-share-catalog");
   const staticShareLevel = page.getByTestId("persona-share-share-level");
+  const shareLevelRow = page.getByTestId("persona-share-share-level-row");
   await waitForAnimations(page);
   const [
     linkRowBox,
     initialCopyLinkButtonBox,
     linkIconBox,
     linkCopyBox,
-    linkDividerBox,
     catalogSectionBox,
     staticShareLevelBox,
+    shareLevelRowBox,
   ] = await Promise.all([
     linkRow.boundingBox(),
     copyLinkButton.boundingBox(),
     linkIcon.boundingBox(),
     linkCopy.boundingBox(),
-    linkDivider.boundingBox(),
     catalogSection.boundingBox(),
     staticShareLevel.boundingBox(),
+    shareLevelRow.boundingBox(),
   ]);
   const sendDescriptionBox = await sendDescription.boundingBox();
-  expect((linkRowBox?.y ?? 0) - (sendDescriptionBox?.y ?? 0)).toBeGreaterThan(
-    (sendDescriptionBox?.height ?? 0) + 30,
+  const recipientFieldBox = await page
+    .getByTestId("persona-share-recipient-field")
+    .boundingBox();
+  // Reading order: who → how it goes out → what's included → catalog.
+  expect(sendDescriptionBox?.y ?? 0).toBeGreaterThanOrEqual(
+    (recipientFieldBox?.y ?? 0) + (recipientFieldBox?.height ?? 0),
   );
-  expect(initialCopyLinkButtonBox?.y ?? 0).toBeGreaterThanOrEqual(
-    (catalogSectionBox?.y ?? 0) + (catalogSectionBox?.height ?? 0) + 23,
+  expect(linkRowBox?.y ?? 0).toBeGreaterThanOrEqual(
+    (sendDescriptionBox?.y ?? 0) + (sendDescriptionBox?.height ?? 0),
+  );
+  expect(shareLevelRowBox?.y ?? 0).toBeGreaterThanOrEqual(
+    (linkRowBox?.y ?? 0) + (linkRowBox?.height ?? 0),
   );
   expect(catalogSectionBox?.y ?? 0).toBeGreaterThanOrEqual(
-    (linkRowBox?.y ?? 0) + (linkRowBox?.height ?? 0) + 7,
+    (shareLevelRowBox?.y ?? 0) + (shareLevelRowBox?.height ?? 0),
   );
+  // Copy link is the link row's own action, not a stranded footer button, so
+  // it rides on that row, vertically centred with the link icon and flush to
+  // the row's right edge.
+  expect(initialCopyLinkButtonBox?.y ?? 0).toBeGreaterThanOrEqual(
+    linkRowBox?.y ?? 0,
+  );
+  expect(
+    (initialCopyLinkButtonBox?.y ?? 0) +
+      (initialCopyLinkButtonBox?.height ?? 0),
+  ).toBeLessThanOrEqual((linkRowBox?.y ?? 0) + (linkRowBox?.height ?? 0) + 1);
+  expect(
+    Math.abs(
+      (initialCopyLinkButtonBox?.y ?? 0) +
+        (initialCopyLinkButtonBox?.height ?? 0) / 2 -
+        ((linkIconBox?.y ?? 0) + (linkIconBox?.height ?? 0) / 2),
+    ),
+  ).toBeLessThanOrEqual(1);
+  expect(
+    Math.abs(
+      (linkRowBox?.x ?? 0) +
+        (linkRowBox?.width ?? 0) -
+        ((initialCopyLinkButtonBox?.x ?? 0) +
+          (initialCopyLinkButtonBox?.width ?? 0)),
+    ),
+  ).toBeLessThanOrEqual(1);
   expect(
     Math.abs(
       (linkCopyBox?.y ?? 0) +
@@ -930,17 +961,10 @@ test("custom personas share with people and keep export separate", async ({
         ((linkIconBox?.y ?? 0) + (linkIconBox?.height ?? 0) / 2),
     ),
   ).toBeLessThanOrEqual(1);
-  expect(linkDividerBox?.y ?? 0).toBeGreaterThan(
-    (catalogSectionBox?.y ?? 0) + (catalogSectionBox?.height ?? 0),
+  await expect(page.getByTestId("persona-share-link-divider")).toHaveCount(0);
+  await expect(page.getByTestId("persona-share-copy-link-footer")).toHaveCount(
+    0,
   );
-  expect(linkDividerBox?.y ?? 0).toBeLessThan(initialCopyLinkButtonBox?.y ?? 0);
-  expect(
-    Math.abs((linkDividerBox?.width ?? 0) - (linkRowBox?.width ?? 0)),
-  ).toBeLessThanOrEqual(1);
-  await expect(linkDivider).toHaveClass(/my-4.*bg-input\/40/);
-  const shareLevelRowBox = await page
-    .getByTestId("persona-share-share-level-row")
-    .boundingBox();
   expect(
     Math.abs(
       (shareLevelRowBox?.y ?? 0) +
@@ -1400,9 +1424,11 @@ This deliberately long fenced-code example must not establish the minimum width 
       catalogSection.boundingBox(),
       shareMainCard.boundingBox(),
     ]);
-  expect(copyLinkButtonBox?.y ?? 0).toBeGreaterThan(
-    (catalogSectionBox?.y ?? 0) + (catalogSectionBox?.height ?? 0),
-  );
+  // Copy link belongs to the link row above, so the catalog is the section
+  // that closes the card rather than trailing an orphaned button.
+  expect(
+    (copyLinkButtonBox?.y ?? 0) + (copyLinkButtonBox?.height ?? 0),
+  ).toBeLessThanOrEqual(catalogSectionBox?.y ?? 0);
   expect(
     (catalogSectionBox?.y ?? 0) + (catalogSectionBox?.height ?? 0),
   ).toBeLessThanOrEqual(
@@ -1738,15 +1764,25 @@ test("one share level selector drives both the link and send paths", async ({
   ]);
   await page.keyboard.press("Escape");
   const copyLinkButton = shareDialog.getByTestId("persona-share-copy-link");
-  const [shareLevelBox, copyLinkButtonBox] = await Promise.all([
-    shareLevel.boundingBox(),
-    copyLinkButton.boundingBox(),
-  ]);
+  const recipientFieldBox = await recipientField.boundingBox();
+  const [shareLevelBox, copyLinkButtonBox, catalogAccessBox] =
+    await Promise.all([
+      shareLevel.boundingBox(),
+      copyLinkButton.boundingBox(),
+      catalogAccess.boundingBox(),
+    ]);
+  // Reading order: who → how it goes out → what's included → catalog.
   expect(copyLinkButtonBox?.y ?? 0).toBeGreaterThanOrEqual(
-    (shareLevelBox?.y ?? 0) + (shareLevelBox?.height ?? 0) + 8,
+    (recipientFieldBox?.y ?? 0) + (recipientFieldBox?.height ?? 0),
   );
-  // The memory choice is stated once, above both delivery actions — neither
-  // the recipients row nor the link row carries its own copy.
+  expect(shareLevelBox?.y ?? 0).toBeGreaterThanOrEqual(
+    (copyLinkButtonBox?.y ?? 0) + (copyLinkButtonBox?.height ?? 0),
+  );
+  expect(catalogAccessBox?.y ?? 0).toBeGreaterThanOrEqual(
+    (shareLevelBox?.y ?? 0) + (shareLevelBox?.height ?? 0),
+  );
+  // The memory choice is stated once, governing both delivery actions —
+  // neither the recipients row nor the link row carries its own copy.
   await expect(
     shareDialog.getByTestId("persona-share-recipient-access"),
   ).toHaveCount(0);

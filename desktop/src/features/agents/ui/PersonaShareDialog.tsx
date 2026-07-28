@@ -40,7 +40,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
-import { Separator } from "@/shared/ui/separator";
 import { Spinner } from "@/shared/ui/spinner";
 
 import {
@@ -476,23 +475,6 @@ export function SnapshotShareDialog({
 
           <div className="space-y-4 pt-4">
             <div className="space-y-2">
-              <div
-                className="flex items-center gap-3"
-                data-testid={`${testIdPrefix}-share-level-row`}
-              >
-                <h3 className="min-w-0 flex-1 text-sm font-medium">
-                  What’s included
-                </h3>
-                <ShareLevelControl
-                  ariaLabel="What to include"
-                  disabled={isInterfacePending}
-                  hasMemoryOptions={hasMemoryOptions}
-                  onChange={setShareLevel}
-                  options={shareLevels}
-                  testId={`${testIdPrefix}-share-level`}
-                  value={shareLevel}
-                />
-              </div>
               <div className="flex items-start gap-2">
                 <motion.div
                   className="min-w-0 flex-1"
@@ -547,6 +529,116 @@ export function SnapshotShareDialog({
               </p>
             </div>
 
+            <div
+              className="flex items-center gap-3 pt-2"
+              data-testid={`${testIdPrefix}-link-row`}
+            >
+              <span
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+                data-testid={`${testIdPrefix}-link-icon`}
+              >
+                <Link2 className="h-4 w-4" />
+              </span>
+              <div
+                className="min-w-0 flex-1"
+                data-testid={`${testIdPrefix}-link-copy`}
+              >
+                <h3 className="text-sm font-medium">Share with a link</h3>
+                <p className="text-xs text-secondary-foreground/75">
+                  Anyone with the link can add and use a copy.
+                </p>
+              </div>
+              <Button
+                asChild
+                className="shrink-0 border-border shadow-none disabled:opacity-100"
+                data-copy-status={copyStatus}
+                data-testid={`${testIdPrefix}-copy-link`}
+                disabled={isActionPending}
+                onClick={() => requestMemoryShare("copy", shareLevel)}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                <motion.button
+                  layout={!shouldReduceMotion}
+                  layoutDependency={copyStatus}
+                  style={{ transformOrigin: "100% 50%" }}
+                  transition={copyButtonLayoutTransition}
+                >
+                  <span aria-live="polite" className="sr-only">
+                    {copyStatusLabel}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="relative grid place-items-center"
+                    data-testid={`${testIdPrefix}-copy-link-stage`}
+                  >
+                    <AnimatePresence initial={false} mode="popLayout">
+                      <motion.span
+                        animate={{
+                          filter: "blur(0px)",
+                          opacity: 1,
+                          transform: "scale(1)",
+                        }}
+                        className="col-start-1 row-start-1 flex items-center justify-center gap-1.5 [transform-origin:50%_50%] will-change-[transform,opacity,filter]"
+                        data-testid={`${testIdPrefix}-copy-link-state`}
+                        exit={
+                          shouldReduceMotion
+                            ? { opacity: 0 }
+                            : {
+                                filter: "blur(2px)",
+                                opacity: 0,
+                                transform: "scale(0.97)",
+                              }
+                        }
+                        initial={
+                          shouldReduceMotion
+                            ? false
+                            : {
+                                filter: "blur(2px)",
+                                opacity: 0,
+                                transform: "scale(0.97)",
+                              }
+                        }
+                        key={copyStatus}
+                        transition={copyFeedbackTransition}
+                      >
+                        {copyStatus === "copying" ? (
+                          <Spinner
+                            aria-hidden="true"
+                            className="h-4 w-4 border-2"
+                          />
+                        ) : copyStatus === "copied" ? (
+                          <Check aria-hidden="true" className="h-4 w-4" />
+                        ) : (
+                          <Link2 aria-hidden="true" className="h-4 w-4" />
+                        )}
+                        <span>{copyStatusLabel}</span>
+                      </motion.span>
+                    </AnimatePresence>
+                  </span>
+                </motion.button>
+              </Button>
+            </div>
+
+            <div
+              className="flex items-center gap-3"
+              data-testid={`${testIdPrefix}-share-level-row`}
+            >
+              <h3 className="min-w-0 flex-1 text-sm font-medium">
+                What’s included
+              </h3>
+              <ShareLevelControl
+                ariaLabel="What to include"
+                disabled={isInterfacePending}
+                hasMemoryOptions={hasMemoryOptions}
+                onChange={setShareLevel}
+                options={shareLevels}
+                testId={`${testIdPrefix}-share-level`}
+                value={shareLevel}
+              />
+            </div>
+
             <AnimatePresence initial={false}>
               {showMemoryWarning ? (
                 <motion.div
@@ -572,109 +664,7 @@ export function SnapshotShareDialog({
               ) : null}
             </AnimatePresence>
 
-            <section
-              className="pt-6"
-              data-testid={`${testIdPrefix}-copy-link-footer`}
-            >
-              <div
-                className="flex items-center gap-3"
-                data-testid={`${testIdPrefix}-link-row`}
-              >
-                <span
-                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
-                  data-testid={`${testIdPrefix}-link-icon`}
-                >
-                  <Link2 className="h-4 w-4" />
-                </span>
-                <div
-                  className="min-w-0 flex-1"
-                  data-testid={`${testIdPrefix}-link-copy`}
-                >
-                  <h3 className="text-sm font-medium">Share with a link</h3>
-                  <p className="text-xs text-secondary-foreground/75">
-                    Anyone with the link can add and use a copy.
-                  </p>
-                </div>
-              </div>
-              {afterLink ? <div className="mt-2">{afterLink}</div> : null}
-              <Separator
-                className="my-4 bg-input/40"
-                data-testid={`${testIdPrefix}-link-divider`}
-              />
-              <div className="flex justify-end">
-                <Button
-                  asChild
-                  className="shrink-0 border-border shadow-none disabled:opacity-100"
-                  data-copy-status={copyStatus}
-                  data-testid={`${testIdPrefix}-copy-link`}
-                  disabled={isActionPending}
-                  onClick={() => requestMemoryShare("copy", shareLevel)}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <motion.button
-                    layout={!shouldReduceMotion}
-                    layoutDependency={copyStatus}
-                    style={{ transformOrigin: "100% 50%" }}
-                    transition={copyButtonLayoutTransition}
-                  >
-                    <span aria-live="polite" className="sr-only">
-                      {copyStatusLabel}
-                    </span>
-                    <span
-                      aria-hidden="true"
-                      className="relative grid place-items-center"
-                      data-testid={`${testIdPrefix}-copy-link-stage`}
-                    >
-                      <AnimatePresence initial={false} mode="popLayout">
-                        <motion.span
-                          animate={{
-                            filter: "blur(0px)",
-                            opacity: 1,
-                            transform: "scale(1)",
-                          }}
-                          className="col-start-1 row-start-1 flex items-center justify-center gap-1.5 [transform-origin:50%_50%] will-change-[transform,opacity,filter]"
-                          data-testid={`${testIdPrefix}-copy-link-state`}
-                          exit={
-                            shouldReduceMotion
-                              ? { opacity: 0 }
-                              : {
-                                  filter: "blur(2px)",
-                                  opacity: 0,
-                                  transform: "scale(0.97)",
-                                }
-                          }
-                          initial={
-                            shouldReduceMotion
-                              ? false
-                              : {
-                                  filter: "blur(2px)",
-                                  opacity: 0,
-                                  transform: "scale(0.97)",
-                                }
-                          }
-                          key={copyStatus}
-                          transition={copyFeedbackTransition}
-                        >
-                          {copyStatus === "copying" ? (
-                            <Spinner
-                              aria-hidden="true"
-                              className="h-4 w-4 border-2"
-                            />
-                          ) : copyStatus === "copied" ? (
-                            <Check aria-hidden="true" className="h-4 w-4" />
-                          ) : (
-                            <Link2 aria-hidden="true" className="h-4 w-4" />
-                          )}
-                          <span>{copyStatusLabel}</span>
-                        </motion.span>
-                      </AnimatePresence>
-                    </span>
-                  </motion.button>
-                </Button>
-              </div>
-            </section>
+            {afterLink}
           </div>
         </div>
         <button
