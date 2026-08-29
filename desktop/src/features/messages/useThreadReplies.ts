@@ -22,6 +22,7 @@ const EMPTY_THREAD_ROOT_IDS: ReadonlySet<string> = new Set();
 
 export type InlineThreadController = {
   errorRootIds: ReadonlySet<string>;
+  fetchingRootIds: ReadonlySet<string>;
   pendingRootIds: ReadonlySet<string>;
   rootIds: ReadonlySet<string>;
   onRetry: () => void;
@@ -83,6 +84,7 @@ export function useThreadReplies(
 type ThreadReplyQueryResult = {
   data?: RelayEvent[];
   isPending: boolean;
+  isFetching: boolean;
   isError: boolean;
   error: unknown;
   refetch: () => unknown;
@@ -123,6 +125,9 @@ export function combineThreadRepliesForRoots(
     ...combineThreadRepliesResults(results),
     errorRootIds: new Set(
       rootIds.filter((_rootId, index) => results[index]?.isError),
+    ),
+    fetchingRootIds: new Set(
+      rootIds.filter((_rootId, index) => results[index]?.isFetching),
     ),
     pendingRootIds: new Set(
       rootIds.filter((_rootId, index) => results[index]?.isPending),
@@ -189,12 +194,20 @@ export function useInlineThreadReplies(activeChannel: Channel | null): {
   const controller = React.useMemo<InlineThreadController>(
     () => ({
       errorRootIds: replies.errorRootIds,
+      fetchingRootIds: replies.fetchingRootIds,
       onRetry,
       onToggle,
       pendingRootIds: replies.pendingRootIds,
       rootIds,
     }),
-    [onRetry, onToggle, replies.errorRootIds, replies.pendingRootIds, rootIds],
+    [
+      onRetry,
+      onToggle,
+      replies.errorRootIds,
+      replies.fetchingRootIds,
+      replies.pendingRootIds,
+      rootIds,
+    ],
   );
 
   return React.useMemo(
@@ -206,12 +219,14 @@ export function useInlineThreadReplies(activeChannel: Channel | null): {
 export function collectNewlyRevealedInlineReplyIds({
   rootIds,
   pendingRootIds,
+  fetchingRootIds,
   errorRootIds,
   events,
   revealedRootIds,
 }: {
   rootIds: ReadonlySet<string>;
   pendingRootIds: ReadonlySet<string>;
+  fetchingRootIds: ReadonlySet<string>;
   errorRootIds: ReadonlySet<string>;
   events: readonly RelayEvent[];
   revealedRootIds: ReadonlySet<string>;
@@ -233,6 +248,7 @@ export function collectNewlyRevealedInlineReplyIds({
     if (
       activeRevealedRootIds.has(rootId) ||
       pendingRootIds.has(rootId) ||
+      fetchingRootIds.has(rootId) ||
       errorRootIds.has(rootId)
     )
       continue;
@@ -253,6 +269,7 @@ export function useMarkInlineRepliesRead(
   React.useEffect(() => {
     const revealed = collectNewlyRevealedInlineReplyIds({
       rootIds: inlineReplies.controller.rootIds,
+      fetchingRootIds: inlineReplies.controller.fetchingRootIds,
       pendingRootIds: inlineReplies.controller.pendingRootIds,
       errorRootIds: inlineReplies.controller.errorRootIds,
       events: inlineReplies.events,
@@ -263,6 +280,7 @@ export function useMarkInlineRepliesRead(
       markRevealedRepliesRead(messageId);
     }
   }, [
+    inlineReplies.controller.fetchingRootIds,
     inlineReplies.controller.errorRootIds,
     inlineReplies.controller.pendingRootIds,
     inlineReplies.controller.rootIds,

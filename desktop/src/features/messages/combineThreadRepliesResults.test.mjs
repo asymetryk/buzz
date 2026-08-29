@@ -35,6 +35,7 @@ function replyEvent(id, rootId, createdAt) {
 function ok(data) {
   return {
     data,
+    isFetching: false,
     isPending: false,
     isError: false,
     error: null,
@@ -47,6 +48,7 @@ function ok(data) {
 function failed(refetch) {
   return {
     data: undefined,
+    isFetching: false,
     isPending: false,
     isError: true,
     error: new Error("subtree load failed"),
@@ -57,6 +59,7 @@ function failed(refetch) {
 function pending() {
   return {
     data: undefined,
+    isFetching: true,
     isPending: true,
     isError: false,
     error: null,
@@ -117,16 +120,22 @@ test("all-success aggregate reports no error", () => {
   assert.equal(combined.error, null);
 });
 
-test("tracks pending and failed state for the owning root only", () => {
+test("tracks pending, refreshing, and failed state for the owning root only", () => {
   const readyRoot = "ready";
   const pendingRoot = "pending";
+  const refreshingRoot = "refreshing";
   const failedRoot = "failed";
+  const refreshing = { ...ok([]), isFetching: true };
   const combined = combineThreadRepliesForRoots(
-    [readyRoot, pendingRoot, failedRoot],
-    [ok([]), pending(), failed(() => {})],
+    [readyRoot, pendingRoot, refreshingRoot, failedRoot],
+    [ok([]), pending(), refreshing, failed(() => {})],
   );
 
   assert.deepEqual([...combined.pendingRootIds], [pendingRoot]);
+  assert.deepEqual(
+    [...combined.fetchingRootIds],
+    [pendingRoot, refreshingRoot],
+  );
   assert.deepEqual([...combined.errorRootIds], [failedRoot]);
 });
 
@@ -136,27 +145,30 @@ test("marks only the reply snapshot revealed by each expansion", () => {
   const futureReply = replyEvent("future", rootId, 200);
   const empty = new Set();
 
-  const pendingReveal = collectNewlyRevealedInlineReplyIds({
+  const refreshingReveal = collectNewlyRevealedInlineReplyIds({
     rootIds: new Set([rootId]),
-    pendingRootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    fetchingRootIds: new Set([rootId]),
     errorRootIds: empty,
     events: [firstReply],
     revealedRootIds: empty,
   });
-  assert.deepEqual(pendingReveal.messageIds, []);
+  assert.deepEqual(refreshingReveal.messageIds, []);
 
   const initialReveal = collectNewlyRevealedInlineReplyIds({
     rootIds: new Set([rootId]),
     pendingRootIds: empty,
+    fetchingRootIds: empty,
     errorRootIds: empty,
     events: [firstReply],
-    revealedRootIds: pendingReveal.revealedRootIds,
+    revealedRootIds: refreshingReveal.revealedRootIds,
   });
   assert.deepEqual(initialReveal.messageIds, [rootId, firstReply.id]);
 
   const liveUpdate = collectNewlyRevealedInlineReplyIds({
     rootIds: new Set([rootId]),
     pendingRootIds: empty,
+    fetchingRootIds: empty,
     errorRootIds: empty,
     events: [firstReply, futureReply],
     revealedRootIds: initialReveal.revealedRootIds,
@@ -166,6 +178,7 @@ test("marks only the reply snapshot revealed by each expansion", () => {
   const collapsed = collectNewlyRevealedInlineReplyIds({
     rootIds: empty,
     pendingRootIds: empty,
+    fetchingRootIds: empty,
     errorRootIds: empty,
     events: [firstReply, futureReply],
     revealedRootIds: liveUpdate.revealedRootIds,
@@ -173,6 +186,7 @@ test("marks only the reply snapshot revealed by each expansion", () => {
   const reopened = collectNewlyRevealedInlineReplyIds({
     rootIds: new Set([rootId]),
     pendingRootIds: empty,
+    fetchingRootIds: empty,
     errorRootIds: empty,
     events: [firstReply, futureReply],
     revealedRootIds: collapsed.revealedRootIds,
