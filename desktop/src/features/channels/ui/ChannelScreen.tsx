@@ -453,7 +453,6 @@ export function ChannelScreen({
     markRevealedRepliesRead,
     openThreadHeadMessage,
     threadFirstUnreadReplyId,
-    threadReplyTargetMessage,
     threadReplyUnreadCounts,
     threadUnreadCounts,
     unreadCount,
@@ -672,7 +671,8 @@ export function ChannelScreen({
     setThreadReplyTargetId,
     setThreadScrollTargetId,
     threadReplyTargetId,
-    threadReplyTargetMessage,
+    threadReplyTargetMessage: threadPanelData.replyTargetMessage,
+    threadMessagesPending: threadRepliesQuery.isPending,
   });
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
