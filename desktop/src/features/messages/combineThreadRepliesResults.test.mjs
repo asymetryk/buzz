@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   combineThreadRepliesForRoots,
+  collectNewlyRevealedInlineReplyIds,
   combineThreadRepliesResults,
 } from "./useThreadReplies.ts";
 
@@ -18,6 +19,16 @@ function event(id, createdAt) {
     content: "reply",
     tags: [],
     sig: "sig",
+  };
+}
+
+function replyEvent(id, rootId, createdAt) {
+  return {
+    ...event(id, createdAt),
+    tags: [
+      ["e", rootId, "", "root"],
+      ["e", rootId, "", "reply"],
+    ],
   };
 }
 
@@ -117,4 +128,58 @@ test("tracks pending and failed state for the owning root only", () => {
 
   assert.deepEqual([...combined.pendingRootIds], [pendingRoot]);
   assert.deepEqual([...combined.errorRootIds], [failedRoot]);
+});
+
+test("marks only the reply snapshot revealed by each expansion", () => {
+  const rootId = "root";
+  const firstReply = replyEvent("first", rootId, 100);
+  const futureReply = replyEvent("future", rootId, 200);
+  const empty = new Set();
+
+  const pendingReveal = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: new Set([rootId]),
+    errorRootIds: empty,
+    events: [firstReply],
+    revealedRootIds: empty,
+  });
+  assert.deepEqual(pendingReveal.messageIds, []);
+
+  const initialReveal = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    errorRootIds: empty,
+    events: [firstReply],
+    revealedRootIds: pendingReveal.revealedRootIds,
+  });
+  assert.deepEqual(initialReveal.messageIds, [rootId, firstReply.id]);
+
+  const liveUpdate = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    errorRootIds: empty,
+    events: [firstReply, futureReply],
+    revealedRootIds: initialReveal.revealedRootIds,
+  });
+  assert.deepEqual(liveUpdate.messageIds, []);
+
+  const collapsed = collectNewlyRevealedInlineReplyIds({
+    rootIds: empty,
+    pendingRootIds: empty,
+    errorRootIds: empty,
+    events: [firstReply, futureReply],
+    revealedRootIds: liveUpdate.revealedRootIds,
+  });
+  const reopened = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    errorRootIds: empty,
+    events: [firstReply, futureReply],
+    revealedRootIds: collapsed.revealedRootIds,
+  });
+  assert.deepEqual(reopened.messageIds, [
+    rootId,
+    firstReply.id,
+    futureReply.id,
+  ]);
 });

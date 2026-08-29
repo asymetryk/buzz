@@ -11,6 +11,7 @@ import {
   threadRepliesKey,
   sortMessages,
 } from "@/features/messages/lib/messageQueryKeys";
+import { getThreadReference } from "@/features/messages/lib/threading";
 import type { TimelineMessage } from "@/features/messages/types";
 import { getThreadReplies } from "@/shared/api/tauri";
 import type { Channel, RelayEvent, ThreadCursor } from "@/shared/api/types";
@@ -202,6 +203,45 @@ export function useInlineThreadReplies(activeChannel: Channel | null): {
   );
 }
 
+export function collectNewlyRevealedInlineReplyIds({
+  rootIds,
+  pendingRootIds,
+  errorRootIds,
+  events,
+  revealedRootIds,
+}: {
+  rootIds: ReadonlySet<string>;
+  pendingRootIds: ReadonlySet<string>;
+  errorRootIds: ReadonlySet<string>;
+  events: readonly RelayEvent[];
+  revealedRootIds: ReadonlySet<string>;
+}) {
+  const activeRevealedRootIds = new Set(
+    [...revealedRootIds].filter((rootId) => rootIds.has(rootId)),
+  );
+  const replyIdsByRoot = new Map<string, string[]>();
+  for (const event of events) {
+    const rootId = getThreadReference(event.tags).rootId;
+    if (!rootId || !rootIds.has(rootId)) continue;
+    const ids = replyIdsByRoot.get(rootId);
+    if (ids) ids.push(event.id);
+    else replyIdsByRoot.set(rootId, [event.id]);
+  }
+
+  const messageIds: string[] = [];
+  for (const rootId of rootIds) {
+    if (
+      activeRevealedRootIds.has(rootId) ||
+      pendingRootIds.has(rootId) ||
+      errorRootIds.has(rootId)
+    )
+      continue;
+    messageIds.push(rootId, ...(replyIdsByRoot.get(rootId) ?? []));
+    activeRevealedRootIds.add(rootId);
+  }
+  return { messageIds, revealedRootIds: activeRevealedRootIds };
+}
+
 export function useMarkInlineRepliesRead(
   inlineReplies: {
     controller: InlineThreadController;
@@ -209,14 +249,22 @@ export function useMarkInlineRepliesRead(
   },
   markRevealedRepliesRead: (messageId: string) => void,
 ) {
+  const revealedRootIdsRef = React.useRef<ReadonlySet<string>>(new Set());
   React.useEffect(() => {
-    for (const rootId of inlineReplies.controller.rootIds) {
-      markRevealedRepliesRead(rootId);
-    }
-    for (const reply of inlineReplies.events) {
-      markRevealedRepliesRead(reply.id);
+    const revealed = collectNewlyRevealedInlineReplyIds({
+      rootIds: inlineReplies.controller.rootIds,
+      pendingRootIds: inlineReplies.controller.pendingRootIds,
+      errorRootIds: inlineReplies.controller.errorRootIds,
+      events: inlineReplies.events,
+      revealedRootIds: revealedRootIdsRef.current,
+    });
+    revealedRootIdsRef.current = revealed.revealedRootIds;
+    for (const messageId of revealed.messageIds) {
+      markRevealedRepliesRead(messageId);
     }
   }, [
+    inlineReplies.controller.errorRootIds,
+    inlineReplies.controller.pendingRootIds,
     inlineReplies.controller.rootIds,
     inlineReplies.events,
     markRevealedRepliesRead,
