@@ -136,6 +136,11 @@ export function useThreadRepliesForRoots(
 ) {
   const queryClient = useQueryClient();
   const channelId = activeChannel?.id ?? "none";
+  const combine = React.useCallback(
+    (results: readonly ThreadReplyQueryResult[]) =>
+      combineThreadRepliesForRoots(rootIds, results),
+    [rootIds],
+  );
   return useQueries({
     queries: rootIds.map((rootId) => ({
       queryKey: threadRepliesKey(channelId, rootId),
@@ -144,14 +149,15 @@ export function useThreadRepliesForRoots(
       staleTime: 0,
       gcTime: 60 * 60 * 1_000,
     })),
-    combine: (results) => combineThreadRepliesForRoots(rootIds, results),
+    combine,
   });
 }
 
 /** Controls on-demand reply subtrees rendered inside the main conversation. */
-export function useInlineThreadReplies(
-  activeChannel: Channel | null,
-): InlineThreadController & { events: RelayEvent[] } {
+export function useInlineThreadReplies(activeChannel: Channel | null): {
+  controller: InlineThreadController;
+  events: RelayEvent[];
+} {
   const activeChannelId = activeChannel?.id ?? null;
   const [state, setState] = React.useState<{
     channelId: string | null;
@@ -178,13 +184,41 @@ export function useInlineThreadReplies(
     },
     [activeChannelId],
   );
+  const onRetry = React.useCallback(() => replies.refetch(), [replies.refetch]);
+  const controller = React.useMemo<InlineThreadController>(
+    () => ({
+      errorRootIds: replies.errorRootIds,
+      onRetry,
+      onToggle,
+      pendingRootIds: replies.pendingRootIds,
+      rootIds,
+    }),
+    [onRetry, onToggle, replies.errorRootIds, replies.pendingRootIds, rootIds],
+  );
 
-  return {
-    errorRootIds: replies.errorRootIds,
-    events: replies.events,
-    onRetry: replies.refetch,
-    onToggle,
-    pendingRootIds: replies.pendingRootIds,
-    rootIds,
-  };
+  return React.useMemo(
+    () => ({ controller, events: replies.events }),
+    [controller, replies.events],
+  );
+}
+
+export function useMarkInlineRepliesRead(
+  inlineReplies: {
+    controller: InlineThreadController;
+    events: RelayEvent[];
+  },
+  markRevealedRepliesRead: (messageId: string) => void,
+) {
+  React.useEffect(() => {
+    for (const rootId of inlineReplies.controller.rootIds) {
+      markRevealedRepliesRead(rootId);
+    }
+    for (const reply of inlineReplies.events) {
+      markRevealedRepliesRead(reply.id);
+    }
+  }, [
+    inlineReplies.controller.rootIds,
+    inlineReplies.events,
+    markRevealedRepliesRead,
+  ]);
 }

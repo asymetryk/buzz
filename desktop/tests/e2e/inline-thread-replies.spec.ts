@@ -28,10 +28,19 @@ async function seedThread(page: Page, channelName: string, label: string) {
       });
       if (!root) throw new Error("Failed to seed inline thread root");
 
+      for (let index = 0; index < 30; index += 1) {
+        window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+          channelName: channel,
+          content: `${surface} later message ${index}`,
+          createdAt: 1_708_000_100 + index,
+          pubkey: bobPubkey,
+        });
+      }
+
       const reply = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: channel,
         content: `${surface} direct reply`,
-        createdAt: 1_708_000_001,
+        createdAt: 1_708_000_200,
         parentEventId: root.id,
         pubkey: bobPubkey,
       });
@@ -40,7 +49,7 @@ async function seedThread(page: Page, channelName: string, label: string) {
       const nestedReply = window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
         channelName: channel,
         content: `${surface} nested reply`,
-        createdAt: 1_708_000_002,
+        createdAt: 1_708_000_201,
         parentEventId: reply.id,
         pubkey: alicePubkey,
       });
@@ -66,11 +75,13 @@ for (const surface of [
     channelName: "general",
     label: "Channel",
     screenshot: "test-results/inline-thread-replies/channel.png",
+    expectUnreadReply: false,
   },
   {
     channelName: "alice-tyler",
     label: "DM",
     screenshot: "test-results/inline-thread-replies/dm.png",
+    expectUnreadReply: true,
   },
 ]) {
   test(`${surface.label} thread replies expand in the main conversation`, async ({
@@ -92,16 +103,24 @@ for (const surface of [
     const toggle = page.locator(
       `[data-testid="message-thread-inline-toggle"][data-thread-head-id="${thread.rootId}"]`,
     );
+    const timeline = page.getByTestId("message-timeline");
+    await summary.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() =>
+        timeline.evaluate(
+          (element) =>
+            element.scrollTop + element.clientHeight < element.scrollHeight - 8,
+        ),
+      )
+      .toBe(true);
     await expect(summary).toBeVisible();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await expect(
       page.getByText(thread.replyContent, { exact: true }),
     ).toHaveCount(0);
-
-    await summary.click();
-    await expect(page.getByTestId("message-thread-panel")).toBeVisible();
-    await page.getByTestId("auxiliary-panel-close").click();
-    await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
+    if (surface.expectUnreadReply) {
+      await expect(page.getByTestId("thread-unread-badge")).toBeVisible();
+    }
 
     await toggle.focus();
     await toggle.press("Enter");
@@ -115,6 +134,9 @@ for (const surface of [
     await expect(
       inlineReplies.getByText(thread.nestedReplyContent, { exact: true }),
     ).toBeVisible();
+    if (surface.expectUnreadReply) {
+      await expect(page.getByTestId("thread-unread-badge")).toHaveCount(0);
+    }
     await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
 
     await waitForAnimations(page);
@@ -123,5 +145,9 @@ for (const surface of [
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await expect(inlineReplies).toHaveCount(0);
+    await summary.click();
+    await expect(page.getByTestId("message-thread-panel")).toBeVisible();
+    await page.getByTestId("auxiliary-panel-close").click();
+    await expect(page.getByTestId("message-thread-panel")).toHaveCount(0);
   });
 }

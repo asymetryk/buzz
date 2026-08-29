@@ -673,6 +673,7 @@ const MessageTimelineBase = React.forwardRef<
       messageFooters={messageFooters}
       mainEntries={renderedMessages === messages ? mainEntries : undefined}
       inlineThreadController={inlineThreadController}
+      inlineThreadMessages={messages}
       leadingContent={virtualizedLeadingContent}
       historyExhausted={renderedHistoryExhausted}
       hideDayDividers={hideDayDividers}

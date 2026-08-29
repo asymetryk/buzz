@@ -54,7 +54,7 @@ import { hasPersistedHydratedChannel } from "@/features/messages/lib/channelHead
 import { resolveTimelineQueryLoadingState } from "@/features/messages/lib/timelineLoadingState";
 import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages";
 import { useIndependentThreadPanel } from "@/features/messages/useIndependentThreadPanel";
-import { useInlineThreadReplies, useThreadReplies } from "@/features/messages/useThreadReplies";
+import { useInlineThreadReplies, useMarkInlineRepliesRead, useThreadReplies } from "@/features/messages/useThreadReplies";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
@@ -473,6 +473,7 @@ export function ChannelScreen({
     isThreadMuted,
     readStateVersion,
   });
+  useMarkInlineRepliesRead(inlineThreadReplies, markRevealedRepliesRead);
   const editTargetMessage = React.useMemo(
     () =>
       timelineMessages.find((message) => message.id === editTargetId) ??
@@ -883,7 +884,7 @@ export function ChannelScreen({
                   isSinglePanelView={isSinglePanelView}
                   isTimelineError={messagesQuery.isError} isTimelineLoading={isTimelineLoading}
                   onRetryTimeline={() => void messagesQuery.refetch()} messages={timelineMessages}
-                  inlineThreadController={inlineThreadReplies}
+                  inlineThreadController={inlineThreadReplies.controller}
                   threadSummaries={threadSummaries}
                   huddleThreadRepliesError={huddleThreadRepliesError}
                   onRetryHuddleThreadReplies={onRetryHuddleThreadReplies}

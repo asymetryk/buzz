@@ -278,9 +278,8 @@ export function MessageRowItem({
             className="pb-1"
             data-testid="message-thread-inline-replies"
           >
-            {inlineReplyRows.length > 0 ? (
-              inlineReplyRows
-            ) : (
+            {inlineReplyRows}
+            {inlineRepliesError || inlineReplyRows.length === 0 ? (
               <div
                 className="px-12 py-2 text-xs text-muted-foreground"
                 data-testid="message-thread-inline-status"
@@ -305,7 +304,7 @@ export function MessageRowItem({
                   "No replies available."
                 )}
               </div>
-            )}
+            ) : null}
           </section>
         ) : null}
       </div>

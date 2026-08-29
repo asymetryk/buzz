@@ -62,6 +62,7 @@ type TimelineMessageListProps = {
   highlightedMessageId?: string | null;
   isFollowingThreadById?: (rootId: string) => boolean;
   inlineThreadController?: InlineThreadController;
+  inlineThreadMessages?: TimelineMessage[];
   isMessageUnreadById?: (messageId: string) => boolean;
   entranceMessageId?: string | null;
   onEntranceMessageComplete?: (messageId: string) => void;
@@ -142,6 +143,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   huddleMemberPubkeysPending = false,
   isFollowingThreadById,
   inlineThreadController,
+  inlineThreadMessages,
   isMessageUnreadById,
   entranceMessageId = null,
   onEntranceMessageComplete,
@@ -179,6 +181,9 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
 }: TimelineMessageListProps) {
   const inlineThreadRootIds =
     inlineThreadController?.rootIds ?? EMPTY_THREAD_ROOT_IDS;
+  const replyMessages = inlineThreadMessages ?? messages;
+  const videoContextMessages =
+    inlineThreadRootIds.size > 0 ? replyMessages : messages;
   const entries = React.useMemo(
     () =>
       mainEntries ??
@@ -190,9 +195,9 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       return new Map<string, MainTimelineEntry[]>();
     }
 
-    const index = buildThreadPanelIndex(messages);
+    const index = buildThreadPanelIndex(replyMessages);
     const expandedReplyIds = new Set(
-      messages
+      replyMessages
         .filter((message) => message.parentId !== null)
         .map((message) => message.id),
     );
@@ -205,7 +210,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       );
     }
     return repliesByThreadId;
-  }, [inlineThreadRootIds, messages]);
+  }, [inlineThreadRootIds, replyMessages]);
   // Contexts are memoized per message id so MessageRow/Markdown memo
   // comparisons hold across unrelated timeline re-renders (typing
   // indicators, presence updates) — a fresh context object per render would
@@ -216,7 +221,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       channelName,
       channelType,
       isSendingVideoReviewComment,
-      messages,
+      messages: videoContextMessages,
       onSendVideoReviewComment,
       onToggleReaction,
       profiles,
@@ -226,7 +231,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
     channelName,
     channelType,
     isSendingVideoReviewComment,
-    messages,
+    videoContextMessages,
     onSendVideoReviewComment,
     onToggleReaction,
     profiles,
