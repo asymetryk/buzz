@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { combineThreadRepliesResults } from "./useThreadReplies.ts";
+import {
+  combineThreadRepliesForRoots,
+  combineThreadRepliesResults,
+} from "./useThreadReplies.ts";
 
 const CHANNEL_A = "a".repeat(64);
 const CHANNEL_B = "b".repeat(64);
@@ -101,4 +104,17 @@ test("all-success aggregate reports no error", () => {
   const combined = combineThreadRepliesResults([ok([]), ok([])]);
   assert.equal(combined.isError, false);
   assert.equal(combined.error, null);
+});
+
+test("tracks pending and failed state for the owning root only", () => {
+  const readyRoot = "ready";
+  const pendingRoot = "pending";
+  const failedRoot = "failed";
+  const combined = combineThreadRepliesForRoots(
+    [readyRoot, pendingRoot, failedRoot],
+    [ok([]), pending(), failed(() => {})],
+  );
+
+  assert.deepEqual([...combined.pendingRootIds], [pendingRoot]);
+  assert.deepEqual([...combined.errorRootIds], [failedRoot]);
 });

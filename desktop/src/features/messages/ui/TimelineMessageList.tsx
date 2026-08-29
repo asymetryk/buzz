@@ -17,11 +17,16 @@ import {
   type VirtualizedTimelineItem,
   virtualizedItemKey,
 } from "@/features/messages/lib/virtualizedTimelineItems";
-import { buildMainTimelineEntries } from "@/features/messages/lib/threadPanel";
-import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
+import {
+  buildMainTimelineEntries,
+  buildThreadPanelDataFromIndex,
+  buildThreadPanelIndex,
+  type MainTimelineEntry,
+} from "@/features/messages/lib/threadPanel";
 import type { ChannelWindowThreadSummary } from "@/features/messages/lib/channelWindowStore";
 import { buildVideoReviewContextsByMessageId } from "@/features/messages/lib/videoReviewContext";
 import type { TimelineMessage } from "@/features/messages/types";
+import type { InlineThreadController } from "@/features/messages/useThreadReplies";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ChannelType } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -56,6 +61,7 @@ type TimelineMessageListProps = {
   followThreadById?: (rootId: string) => void;
   highlightedMessageId?: string | null;
   isFollowingThreadById?: (rootId: string) => boolean;
+  inlineThreadController?: InlineThreadController;
   isMessageUnreadById?: (messageId: string) => boolean;
   entranceMessageId?: string | null;
   onEntranceMessageComplete?: (messageId: string) => void;
@@ -122,6 +128,8 @@ type TimelineMessageListProps = {
   onVirtualizerScrollerChange?: (element: HTMLDivElement | null) => void;
 };
 
+const EMPTY_THREAD_ROOT_IDS: ReadonlySet<string> = new Set();
+
 export const TimelineMessageList = React.memo(function TimelineMessageList({
   channelId,
   channelName,
@@ -133,6 +141,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   huddleMemberPubkeys,
   huddleMemberPubkeysPending = false,
   isFollowingThreadById,
+  inlineThreadController,
   isMessageUnreadById,
   entranceMessageId = null,
   onEntranceMessageComplete,
@@ -168,12 +177,35 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
   onVirtualizerRangeChanged,
   onVirtualizerScrollerChange,
 }: TimelineMessageListProps) {
+  const inlineThreadRootIds =
+    inlineThreadController?.rootIds ?? EMPTY_THREAD_ROOT_IDS;
   const entries = React.useMemo(
     () =>
       mainEntries ??
       buildMainTimelineEntries(messages, undefined, threadSummaries, profiles),
     [mainEntries, messages, profiles, threadSummaries],
   );
+  const inlineRepliesByThreadId = React.useMemo(() => {
+    if (inlineThreadRootIds.size === 0) {
+      return new Map<string, MainTimelineEntry[]>();
+    }
+
+    const index = buildThreadPanelIndex(messages);
+    const expandedReplyIds = new Set(
+      messages
+        .filter((message) => message.parentId !== null)
+        .map((message) => message.id),
+    );
+    const repliesByThreadId = new Map<string, MainTimelineEntry[]>();
+    for (const rootId of inlineThreadRootIds) {
+      repliesByThreadId.set(
+        rootId,
+        buildThreadPanelDataFromIndex(index, rootId, null, expandedReplyIds)
+          .visibleReplies,
+      );
+    }
+    return repliesByThreadId;
+  }, [inlineThreadRootIds, messages]);
   // Contexts are memoized per message id so MessageRow/Markdown memo
   // comparisons hold across unrelated timeline re-renders (typing
   // indicators, presence updates) — a fresh context object per render would
@@ -247,11 +279,20 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               currentPubkey={currentPubkey}
               entry={item.entry}
               followThreadById={followThreadById}
+              footerByMessageId={messageFooters}
               footer={messageFooters?.[item.entry.message.id] ?? null}
               highlightedMessageId={highlightedMessageId}
               huddleMemberPubkeys={huddleMemberPubkeys}
               huddleMemberPubkeysPending={huddleMemberPubkeysPending}
               hideAgentAccessBadges={hideAgentAccessBadges}
+              inlineExpanded={inlineThreadRootIds.has(item.entry.message.id)}
+              inlineReplies={inlineRepliesByThreadId.get(item.entry.message.id)}
+              inlineRepliesError={inlineThreadController?.errorRootIds.has(
+                item.entry.message.id,
+              )}
+              inlineRepliesPending={inlineThreadController?.pendingRootIds.has(
+                item.entry.message.id,
+              )}
               isContinuation={
                 alwaysShowMessageIdentity ? false : item.isContinuation
               }
@@ -262,6 +303,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               }
               isFollowingThreadById={isFollowingThreadById}
               isUnread={isMessageUnreadById?.(item.entry.message.id)}
+              isMessageUnreadById={isMessageUnreadById}
               playEntrance={item.entry.message.id === entranceMessageId}
               onEntranceComplete={onEntranceMessageComplete}
               onDelete={onDelete}
@@ -270,7 +312,9 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               onMarkUnread={onMarkUnread}
               onReply={onReply}
               onOpenThread={onOpenThread}
+              onRetryInlineReplies={inlineThreadController?.onRetry}
               onToggleReaction={onToggleReaction}
+              onToggleInlineThread={inlineThreadController?.onToggle}
               profiles={profiles}
               searchActiveMessageId={searchActiveMessageId}
               searchMatchingMessageIds={searchMatchingMessageIds}
@@ -280,6 +324,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
               videoReviewContext={videoReviewContextById.get(
                 item.entry.message.id,
               )}
+              videoReviewContextById={videoReviewContextById}
             />
           );
       }
@@ -293,6 +338,9 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
       huddleMemberPubkeys,
       huddleMemberPubkeysPending,
       hideAgentAccessBadges,
+      inlineRepliesByThreadId,
+      inlineThreadController,
+      inlineThreadRootIds,
       isFollowingThreadById,
       isMessageUnreadById,
       entranceMessageId,
