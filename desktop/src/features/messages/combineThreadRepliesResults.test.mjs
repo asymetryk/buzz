@@ -197,3 +197,36 @@ test("marks only the reply snapshot revealed by each expansion", () => {
     futureReply.id,
   ]);
 });
+
+test("marks cached replies on refresh failure without freezing the snapshot", () => {
+  const rootId = "root";
+  const cachedReply = replyEvent("cached", rootId, 100);
+  const refreshedReply = replyEvent("refreshed", rootId, 200);
+  const empty = new Set();
+
+  const failedRefresh = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    fetchingRootIds: empty,
+    errorRootIds: new Set([rootId]),
+    events: [cachedReply],
+    revealedRootIds: empty,
+  });
+  assert.deepEqual(failedRefresh.messageIds, [rootId, cachedReply.id]);
+  assert.deepEqual([...failedRefresh.revealedRootIds], []);
+
+  const retrySucceeded = collectNewlyRevealedInlineReplyIds({
+    rootIds: new Set([rootId]),
+    pendingRootIds: empty,
+    fetchingRootIds: empty,
+    errorRootIds: empty,
+    events: [cachedReply, refreshedReply],
+    revealedRootIds: failedRefresh.revealedRootIds,
+  });
+  assert.deepEqual(retrySucceeded.messageIds, [
+    rootId,
+    cachedReply.id,
+    refreshedReply.id,
+  ]);
+  assert.deepEqual([...retrySucceeded.revealedRootIds], [rootId]);
+});

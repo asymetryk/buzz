@@ -248,12 +248,11 @@ export function collectNewlyRevealedInlineReplyIds({
     if (
       activeRevealedRootIds.has(rootId) ||
       pendingRootIds.has(rootId) ||
-      fetchingRootIds.has(rootId) ||
-      errorRootIds.has(rootId)
+      fetchingRootIds.has(rootId)
     )
       continue;
     messageIds.push(rootId, ...(replyIdsByRoot.get(rootId) ?? []));
-    activeRevealedRootIds.add(rootId);
+    if (!errorRootIds.has(rootId)) activeRevealedRootIds.add(rootId);
   }
   return { messageIds, revealedRootIds: activeRevealedRootIds };
 }
